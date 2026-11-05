@@ -31,6 +31,18 @@ git pull origin main
 > `git stash`, actualiza con `git pull origin main` y recuperalos con
 > `git stash pop`.
 
+## Pruebas
+
+El repo incluye una suite que valida la deteccion y, sobre todo, **0 falsos
+positivos** contra dos objetivos de laboratorio locales (uno vulnerable y uno
+seguro):
+
+```bash
+bash tests/run_tests.sh
+```
+
+Debe terminar con `Resultado: 9 OK, 0 fallidos`.
+
 ## Uso
 
 ### Simple (recomendado)

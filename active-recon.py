@@ -14,15 +14,13 @@ import ssl
 import time
 import argparse
 import threading
-import hashlib
 import base64
 import random
-import struct
-from urllib.parse import urlparse, urljoin, urlencode, parse_qs, quote, unquote
+from urllib.parse import urlparse, urljoin, parse_qs, quote
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
-from collections import deque, defaultdict
+from collections import deque
 
 try:
     import requests
@@ -256,19 +254,28 @@ def create_session(user_agent=None, proxy=None, cookies=None, headers=None, time
                 s.headers[k.strip()] = v.strip()
     return s
 
-def safe_request(session, method, url, rate_limiter=None, rotate_ua=False, **kwargs):
-    if rate_limiter:
-        rate_limiter.wait()
-    if rotate_ua:
-        session.headers["User-Agent"] = random.choice(USER_AGENTS)
-    try:
-        kwargs.setdefault("timeout", session.timeout if hasattr(session, 'timeout') else 10)
-        kwargs.setdefault("verify", False)
-        kwargs.setdefault("allow_redirects", False)
-        return session.request(method, url, **kwargs)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
-            requests.exceptions.TooManyRedirects, Exception):
-        return None
+def safe_request(session, method, url, rate_limiter=None, rotate_ua=False, retries=2, **kwargs):
+    kwargs.setdefault("timeout", getattr(session, "timeout", 10))
+    kwargs.setdefault("verify", False)
+    kwargs.setdefault("allow_redirects", False)
+    attempt = 0
+    while True:
+        if rate_limiter:
+            rate_limiter.wait()
+        if rotate_ua:
+            session.headers["User-Agent"] = random.choice(USER_AGENTS)
+        try:
+            return session.request(method, url, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            # Reintentar SOLO errores transitorios de red, con backoff corto.
+            # (Las pruebas time-based pasan retries=0 para no alterar la medicion.)
+            if attempt >= retries:
+                return None
+            time.sleep(0.4 * (2 ** attempt))
+            attempt += 1
+        except Exception:
+            # Cualquier otro error: no reintentar
+            return None
 
 def get_domain(url):
     return urlparse(url).hostname or ""
@@ -2561,7 +2568,7 @@ def mod_sqli(ctx):
     def timed_get(full_url, timeout=15):
         # Devuelve (respuesta|None, segundos_transcurridos)
         start = time.time()
-        resp = safe_request(session, "GET", full_url, rl, rua, timeout=timeout)
+        resp = safe_request(session, "GET", full_url, rl, rua, retries=0, timeout=timeout)
         return resp, time.time() - start
 
     for param in params:
@@ -2705,14 +2712,20 @@ def mod_xss(ctx):
                 findings.append({"param": param, "type": "markup-unfiltered",
                                "severity": "MEDIUM"})
 
-        # POST XSS
+        # POST XSS (form-urlencoded y JSON)
+        post_done = False
         for payload in XSS_PAYLOADS[:5]:
-            r = safe_request(session, "POST", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
-                           data={param: payload})
-            if r and payload in r.text and ("<" in payload or ">" in payload):
-                log_vuln("HIGH", f"XSS POST reflejado: param={param}")
-                findings.append({"param": param, "type": "post-reflected", "payload": payload,
-                               "severity": "HIGH"})
+            for kind, kwargs in (("form", {"data": {param: payload}}),
+                                 ("json", {"json": {param: payload}})):
+                r = safe_request(session, "POST", base, ctx["rate_limiter"],
+                               ctx["mode_config"]["rotate_ua"], **kwargs)
+                if r and payload in r.text and ("<" in payload or ">" in payload):
+                    log_vuln("HIGH", f"XSS POST reflejado ({kind}): param={param}")
+                    findings.append({"param": param, "type": f"post-{kind}-reflected",
+                                   "payload": payload, "severity": "HIGH"})
+                    post_done = True
+                    break
+            if post_done:
                 break
 
     # DOM XSS indicators
@@ -2747,28 +2760,46 @@ def mod_lfi(ctx):
               "content", "layout", "mod", "conf", "load", "read", "lang"]
 
     base = url.split("?")[0]
-    lfi_indicators = ["root:", "/bin/", "daemon:", "nobody:", "[boot loader]",
-                      "[fonts]", "for 16-bit app support", "localhost",
-                      "PD9waH", "<?php", "<?=", "class ", "function "]
+    # Indicadores FUERTES: contenido real de archivos sensibles (muy poco FP).
+    # Se descartan "localhost"/"class "/"function "/"<?php": aparecen en paginas normales.
+    lfi_strong = ["root:x:", "root:!:", "daemon:x:", "bin:x:", "nobody:x:",
+                  "/bin/bash", "/bin/sh", "[boot loader]", "[fonts]",
+                  "for 16-bit app support"]
+    # Lectura de fuente PHP via php://filter (base64 de "<?php...") -> fuerte
+    lfi_php = ["PD9waHA", "PD9waHAK"]
 
     log_info(f"Probando {len(params)} parametros con {len(LFI_PAYLOADS)} payloads...")
 
     for param in params:
+        # Linea base benigna para descartar indicadores ya presentes de por si
+        base_resp = safe_request(session, "GET", f"{base}?{param}=index",
+                                 ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        base_body = base_resp.text if base_resp else ""
+
         for payload in LFI_PAYLOADS:
             r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
                            ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
             if not r:
                 continue
-
             body = r.text
-            for indicator in lfi_indicators:
-                if indicator in body:
-                    sev = "CRITICAL" if "root:" in body or "/bin/" in body else "HIGH"
-                    log_vuln(sev, f"LFI: param={param} payload={payload[:50]}")
-                    log_info(f"  Indicador: {indicator}")
-                    findings.append({"param": param, "payload": payload,
-                                   "indicator": indicator, "severity": sev})
-                    break
+            # El indicador debe venir del archivo leido: no estar en la baseline
+            # ni ser parte del propio payload (evita confundir reflexion con LFI).
+            hit = next((i for i in lfi_strong
+                        if i in body and i not in base_body and i not in payload), None)
+            if hit:
+                sev = "CRITICAL" if ("root:x:" in body or "/bin/" in body) else "HIGH"
+                log_vuln(sev, f"LFI: param={param} payload={payload[:50]}")
+                log_info(f"  Indicador: {hit}")
+                findings.append({"param": param, "payload": payload,
+                               "indicator": hit, "severity": sev})
+                break
+            php = next((i for i in lfi_php
+                        if i in body and i not in base_body and i not in payload), None)
+            if php:
+                log_vuln("HIGH", f"LFI (fuente PHP via php://filter): param={param} payload={payload[:50]}")
+                findings.append({"param": param, "payload": payload,
+                               "indicator": "php-filter-base64", "severity": "HIGH"})
+                break
 
     ctx["results"]["lfi"] = findings
 
@@ -2924,11 +2955,20 @@ def mod_host_header(ctx):
                         rotate_ua=ctx["mode_config"]["rotate_ua"])
         if not r:
             continue
+        header_name = [k for k in test_headers if k != "Host"][0] if len(test_headers) > 1 else "Host"
+        location = r.headers.get("Location", "").lower()
         body = r.text.lower()
-        if "evil.com" in body or "evil.com" in str(r.headers).lower():
-            header_name = [k for k in test_headers if k != "Host"][0] if len(test_headers) > 1 else "Host"
-            log_vuln("MEDIUM", f"Host Header Injection via {header_name}")
-            findings.append({"header": header_name, "severity": "MEDIUM"})
+        # Solo cuenta si evil.com aparece como DESTINO/URL (redirect o enlace absoluto),
+        # no como simple mencion de texto -> reduce falsos positivos.
+        in_location = "evil.com" in location
+        in_url = any(s in body for s in ["//evil.com", "http://evil.com",
+                                         "https://evil.com", "@evil.com"])
+        if in_location or in_url:
+            sev = "HIGH" if in_location else "MEDIUM"
+            donde = "Location header" if in_location else "cuerpo (URL absoluta)"
+            log_vuln(sev, f"Host Header Injection via {header_name} ({donde})")
+            findings.append({"header": header_name, "in_location": in_location,
+                           "severity": sev})
 
     ctx["results"]["host_header"] = findings
 
@@ -2986,19 +3026,26 @@ def mod_ssrf(ctx):
                                "indicator": hit, "severity": "CRITICAL"})
                 break
 
-        # POST SSRF (solo indicadores fuertes, sin contar reflejo del payload)
+        # POST SSRF (form y JSON, solo indicadores fuertes sin contar reflejo del payload)
+        post_done = False
         for payload in ssrf_payloads[:5]:
-            r = safe_request(session, "POST", base, rl, rua, data={param: payload})
-            if r:
+            pl = payload.lower()
+            for kind, kwargs in (("form", {"data": {param: payload}}),
+                                 ("json", {"json": {param: payload}})):
+                r = safe_request(session, "POST", base, rl, rua, **kwargs)
+                if not r:
+                    continue
                 body = r.text.lower()
-                pl = payload.lower()
                 hit = next((i for i in ["ami-id","instance-id","root:","redis_version"]
                             if i in body and i not in pl), None)
                 if hit:
-                    log_vuln("CRITICAL", f"SSRF POST: param={param} -> {hit}")
+                    log_vuln("CRITICAL", f"SSRF POST ({kind}): param={param} -> {hit}")
                     findings.append({"param": param, "payload": payload,
-                                   "type": "POST", "indicator": hit, "severity": "CRITICAL"})
+                                   "type": f"POST-{kind}", "indicator": hit, "severity": "CRITICAL"})
+                    post_done = True
                     break
+            if post_done:
+                break
 
     ctx["results"]["ssrf"] = findings
 
@@ -3058,7 +3105,7 @@ def mod_cmdi(ctx):
 
     def timed(full_url):
         start = time.time()
-        resp = safe_request(session, "GET", full_url, rl, rua, timeout=20)
+        resp = safe_request(session, "GET", full_url, rl, rua, retries=0, timeout=20)
         return resp, time.time() - start
 
     # Indicadores de salida fuertes (poco propensos a falso positivo)
