@@ -2137,13 +2137,16 @@ def mod_ssl_audit(ctx):
 
         # Check for weak versions
         weak_protos = [ssl.PROTOCOL_TLSv1, ssl.PROTOCOL_TLSv1_1] if hasattr(ssl, 'PROTOCOL_TLSv1') else []
+        import warnings
         for proto_name in ["TLSv1", "TLSv1.1"]:
             try:
                 ctx2 = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 ctx2.check_hostname = False
                 ctx2.verify_mode = ssl.CERT_NONE
-                ctx2.maximum_version = getattr(ssl.TLSVersion, proto_name.replace(".", "_"), None)
-                ctx2.minimum_version = ctx2.maximum_version
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    ctx2.maximum_version = getattr(ssl.TLSVersion, proto_name.replace(".", "_"), None)
+                    ctx2.minimum_version = ctx2.maximum_version
                 if ctx2.maximum_version:
                     s2 = ctx2.wrap_socket(socket.socket(), server_hostname=host)
                     s2.settimeout(5)
