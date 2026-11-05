@@ -2675,41 +2675,41 @@ def mod_xss(ctx):
             continue
 
         log_info(f"Parametro '{param}' refleja input - probando payloads...")
-        # Conteo base de tags en la respuesta benigna (para no marcar los <script> propios de la pagina)
-        base_scripts = r.text.lower().count("<script")
-        base_onerror = r.text.lower().count("onerror")
 
+        reflected = False
         for payload in XSS_PAYLOADS:
             r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
                            ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
             if not r:
                 continue
-
-            # Check if payload is reflected unencoded
-            if payload in r.text:
+            # Reflejo exacto sin codificar -> XSS reflejado.
+            # Solo cuenta si el payload trae markup (< o >) que sobrevive sin codificar;
+            # un payload sin caracteres especiales (p.ej. 'javascript:alert(1)') se refleja
+            # como texto plano incluso en servidores que codifican bien, y eso no es XSS.
+            if payload in r.text and ("<" in payload or ">" in payload):
                 log_vuln("HIGH", f"XSS reflejado: param={param} payload={payload[:50]}")
                 findings.append({"param": param, "type": "reflected", "payload": payload,
                                "severity": "HIGH"})
+                reflected = True
                 break
-            # Reflexion parcial: solo si NUESTRA inyeccion aumenta el conteo de tags
-            # respecto a la respuesta benigna (evita marcar los <script> propios de la pagina)
-            body_l = r.text.lower()
-            if "<script" in payload.lower() and body_l.count("<script") > base_scripts:
-                log_vuln("MEDIUM", f"XSS parcial (script tag no filtrado): param={param}")
-                findings.append({"param": param, "type": "partial", "payload": payload,
+
+        # Reflexion de markup (parcial): inyecta una etiqueta canary y comprueba que
+        # '<' y '>' sobreviven SIN codificar. Si salen como &lt;&gt; no es inyectable
+        # (asi no marcamos entradas HTML-escapadas ni los <script> propios de la pagina).
+        if not reflected:
+            marker = f"qx{random.randint(100000, 999999)}"
+            rp = safe_request(session, "GET", f"{base}?{param}=<{marker}>",
+                              ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if rp and f"<{marker}>" in rp.text:
+                log_vuln("MEDIUM", f"XSS: markup sin filtrar (inyeccion de etiquetas posible): param={param}")
+                findings.append({"param": param, "type": "markup-unfiltered",
                                "severity": "MEDIUM"})
-                break
-            if "onerror" in payload.lower() and body_l.count("onerror") > base_onerror:
-                log_vuln("MEDIUM", f"XSS parcial (event handler no filtrado): param={param}")
-                findings.append({"param": param, "type": "partial-event", "payload": payload,
-                               "severity": "MEDIUM"})
-                break
 
         # POST XSS
         for payload in XSS_PAYLOADS[:5]:
             r = safe_request(session, "POST", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
                            data={param: payload})
-            if r and payload in r.text:
+            if r and payload in r.text and ("<" in payload or ">" in payload):
                 log_vuln("HIGH", f"XSS POST reflejado: param={param}")
                 findings.append({"param": param, "type": "post-reflected", "payload": payload,
                                "severity": "HIGH"})
@@ -2965,42 +2965,35 @@ def mod_ssrf(ctx):
     base = url.split("?")[0]
     rl = ctx["rate_limiter"]
     rua = ctx["mode_config"]["rotate_ua"]
-    # Indicadores fuertes: metadatos cloud / servicios internos (muy poco FP) -> CRITICAL
+    # Indicadores fuertes: contenido que SOLO devuelve el servicio interno/cloud.
+    # Se exige ademas que el indicador NO forme parte del payload, para no confundir
+    # una simple reflexion del payload (que ya contiene "meta-data", etc.) con un SSRF real.
     strong_indicators = ["ami-id","instance-id","instance-type","availability-zone",
                          "iam/security-credentials","compute/v1","redis_version",
                          "connected_clients","root:","daemon:"]
-    # Indicadores debiles: solo valen si NO estaban ya en la respuesta benigna -> HIGH (verificar)
-    weak_indicators = ["meta-data","127.0.0.1","localhost","internal","private"]
 
     for param in params:
-        base_resp = safe_request(session, "GET", f"{base}?{param}=https://example.com", rl, rua)
-        base_body = base_resp.text.lower() if base_resp else ""
-
         for payload in ssrf_payloads:
             r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}", rl, rua)
             if not r:
                 continue
             body = r.text.lower()
-            hit = next((i for i in strong_indicators if i in body), None)
+            pl = payload.lower()
+            hit = next((i for i in strong_indicators if i in body and i not in pl), None)
             if hit:
                 log_vuln("CRITICAL", f"SSRF: param={param} payload={payload[:50]} -> {hit}")
                 findings.append({"param": param, "payload": payload,
                                "indicator": hit, "severity": "CRITICAL"})
                 break
-            # Debiles: solo si aparecen por el payload (no estaban en la baseline)
-            whit = next((i for i in weak_indicators if i in body and i not in base_body), None)
-            if whit:
-                log_vuln("HIGH", f"SSRF posible: param={param} payload={payload[:50]} -> {whit} (verificar)")
-                findings.append({"param": param, "payload": payload,
-                               "indicator": whit, "type": "posible", "severity": "HIGH"})
-                break
 
-        # POST SSRF (solo indicadores fuertes)
+        # POST SSRF (solo indicadores fuertes, sin contar reflejo del payload)
         for payload in ssrf_payloads[:5]:
             r = safe_request(session, "POST", base, rl, rua, data={param: payload})
             if r:
                 body = r.text.lower()
-                hit = next((i for i in ["ami-id","instance-id","root:","redis_version"] if i in body), None)
+                pl = payload.lower()
+                hit = next((i for i in ["ami-id","instance-id","root:","redis_version"]
+                            if i in body and i not in pl), None)
                 if hit:
                     log_vuln("CRITICAL", f"SSRF POST: param={param} -> {hit}")
                     findings.append({"param": param, "payload": payload,
