@@ -2968,13 +2968,17 @@ def generate_report(ctx):
     total = sum(severity_count.values())
     print(_c(C.BOLD, "  RESUMEN:"))
     if severity_count["CRITICAL"]:
-        print(f"    {_c(C.R+C.BOLD, f'CRITICAL: {severity_count[\"CRITICAL\"]}')} ")
+        crit = severity_count["CRITICAL"]
+        print(f"    {_c(C.R+C.BOLD, f'CRITICAL: {crit}')} ")
     if severity_count["HIGH"]:
-        print(f"    {_c(C.R, f'HIGH: {severity_count[\"HIGH\"]}')} ")
+        high = severity_count["HIGH"]
+        print(f"    {_c(C.R, f'HIGH: {high}')} ")
     if severity_count["MEDIUM"]:
-        print(f"    {_c(C.Y, f'MEDIUM: {severity_count[\"MEDIUM\"]}')} ")
+        med = severity_count["MEDIUM"]
+        print(f"    {_c(C.Y, f'MEDIUM: {med}')} ")
     if severity_count["LOW"]:
-        print(f"    {_c(C.B, f'LOW: {severity_count[\"LOW\"]}')} ")
+        low = severity_count["LOW"]
+        print(f"    {_c(C.B, f'LOW: {low}')} ")
     print(f"    Total hallazgos: {total}")
     print()
 
@@ -3097,7 +3101,8 @@ Modulos especificos:
         mode = select_mode_interactive()
 
     mode_config = SPEED_MODES[mode]
-    print(f"\n  {_c(C.G+C.BOLD, f'Modo seleccionado: {mode_config[\"name\"]}')}")
+    mname = mode_config["name"]
+    print(f"\n  {_c(C.G+C.BOLD, f'Modo seleccionado: {mname}')}")
     print(f"  {_c(C.D, mode_config['desc'])}\n")
 
     # Parse ports
