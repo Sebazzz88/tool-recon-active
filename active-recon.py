@@ -2628,7 +2628,7 @@ def mod_graphql(ctx):
             pass
 
     # SQLi in GraphQL
-    sqli_query = '{"query":"{ user(id: \\"1\\' OR 1=1--\\") { name } }"}'
+    sqli_query = '{"query":"{ user(id: \\"1 OR 1=1--\\") { name } }"}'
     r = safe_request(session, "POST", gql_endpoint, ctx["rate_limiter"],
                     ctx["mode_config"]["rotate_ua"],
                     data=sqli_query, headers={"Content-Type": "application/json"})
