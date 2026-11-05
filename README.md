@@ -18,6 +18,19 @@ cd tool-recon-active
 pip install requests dnspython
 ```
 
+## Actualizar
+
+Si ya tienes el repositorio clonado, para traer la ultima version:
+
+```bash
+cd tool-recon-active
+git pull origin main
+```
+
+> Si hiciste cambios locales y `git pull` se queja, guardalos antes con
+> `git stash`, actualiza con `git pull origin main` y recuperalos con
+> `git stash pop`.
+
 ## Uso
 
 ### Simple (recomendado)

@@ -2675,6 +2675,9 @@ def mod_xss(ctx):
             continue
 
         log_info(f"Parametro '{param}' refleja input - probando payloads...")
+        # Conteo base de tags en la respuesta benigna (para no marcar los <script> propios de la pagina)
+        base_scripts = r.text.lower().count("<script")
+        base_onerror = r.text.lower().count("onerror")
 
         for payload in XSS_PAYLOADS:
             r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
@@ -2688,13 +2691,15 @@ def mod_xss(ctx):
                 findings.append({"param": param, "type": "reflected", "payload": payload,
                                "severity": "HIGH"})
                 break
-            # Check for partial reflection (tag not stripped)
-            if "<script" in payload and "<script" in r.text:
+            # Reflexion parcial: solo si NUESTRA inyeccion aumenta el conteo de tags
+            # respecto a la respuesta benigna (evita marcar los <script> propios de la pagina)
+            body_l = r.text.lower()
+            if "<script" in payload.lower() and body_l.count("<script") > base_scripts:
                 log_vuln("MEDIUM", f"XSS parcial (script tag no filtrado): param={param}")
                 findings.append({"param": param, "type": "partial", "payload": payload,
                                "severity": "MEDIUM"})
                 break
-            if "onerror" in payload and "onerror" in r.text:
+            if "onerror" in payload.lower() and body_l.count("onerror") > base_onerror:
                 log_vuln("MEDIUM", f"XSS parcial (event handler no filtrado): param={param}")
                 findings.append({"param": param, "type": "partial-event", "payload": payload,
                                "severity": "MEDIUM"})
@@ -2958,36 +2963,49 @@ def mod_ssrf(ctx):
     ]
 
     base = url.split("?")[0]
+    rl = ctx["rate_limiter"]
+    rua = ctx["mode_config"]["rotate_ua"]
+    # Indicadores fuertes: metadatos cloud / servicios internos (muy poco FP) -> CRITICAL
+    strong_indicators = ["ami-id","instance-id","instance-type","availability-zone",
+                         "iam/security-credentials","compute/v1","redis_version",
+                         "connected_clients","root:","daemon:"]
+    # Indicadores debiles: solo valen si NO estaban ya en la respuesta benigna -> HIGH (verificar)
+    weak_indicators = ["meta-data","127.0.0.1","localhost","internal","private"]
+
     for param in params:
+        base_resp = safe_request(session, "GET", f"{base}?{param}=https://example.com", rl, rua)
+        base_body = base_resp.text.lower() if base_resp else ""
+
         for payload in ssrf_payloads:
-            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
-                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}", rl, rua)
             if not r:
                 continue
             body = r.text.lower()
-            ssrf_indicators = ["ami-id","instance-id","instance-type","availability-zone",
-                              "iam/security-credentials","compute/v1","meta-data",
-                              "root:","daemon:","redis_version","connected_clients",
-                              "127.0.0.1","localhost","internal","private"]
-            for ind in ssrf_indicators:
-                if ind in body:
-                    log_vuln("CRITICAL", f"SSRF: param={param} payload={payload[:50]} -> {ind}")
-                    findings.append({"param": param, "payload": payload,
-                                   "indicator": ind, "severity": "CRITICAL"})
-                    break
+            hit = next((i for i in strong_indicators if i in body), None)
+            if hit:
+                log_vuln("CRITICAL", f"SSRF: param={param} payload={payload[:50]} -> {hit}")
+                findings.append({"param": param, "payload": payload,
+                               "indicator": hit, "severity": "CRITICAL"})
+                break
+            # Debiles: solo si aparecen por el payload (no estaban en la baseline)
+            whit = next((i for i in weak_indicators if i in body and i not in base_body), None)
+            if whit:
+                log_vuln("HIGH", f"SSRF posible: param={param} payload={payload[:50]} -> {whit} (verificar)")
+                findings.append({"param": param, "payload": payload,
+                               "indicator": whit, "type": "posible", "severity": "HIGH"})
+                break
 
-        # POST SSRF
+        # POST SSRF (solo indicadores fuertes)
         for payload in ssrf_payloads[:5]:
-            r = safe_request(session, "POST", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
-                           data={param: payload})
+            r = safe_request(session, "POST", base, rl, rua, data={param: payload})
             if r:
                 body = r.text.lower()
-                for ind in ["ami-id","instance-id","root:","redis_version"]:
-                    if ind in body:
-                        log_vuln("CRITICAL", f"SSRF POST: param={param} -> {ind}")
-                        findings.append({"param": param, "payload": payload,
-                                       "type": "POST", "indicator": ind, "severity": "CRITICAL"})
-                        break
+                hit = next((i for i in ["ami-id","instance-id","root:","redis_version"] if i in body), None)
+                if hit:
+                    log_vuln("CRITICAL", f"SSRF POST: param={param} -> {hit}")
+                    findings.append({"param": param, "payload": payload,
+                                   "type": "POST", "indicator": hit, "severity": "CRITICAL"})
+                    break
 
     ctx["results"]["ssrf"] = findings
 
@@ -3007,12 +3025,18 @@ def mod_ssti(ctx):
     log_info(f"Probando {len(params)} parametros con {len(SSTI_PAYLOADS)} payloads...")
 
     for param in params:
+        # Linea base: respuesta benigna para descartar que "expected" ya aparezca de por si
+        base_resp = safe_request(session, "GET", f"{base}?{param}=sstiprobe",
+                                 ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        base_body = base_resp.text if base_resp else ""
         for payload, expected in SSTI_PAYLOADS:
             r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
                            ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
             if not r:
                 continue
-            if expected in r.text:
+            # Debe aparecer el resultado EVALUADO, que no estuviera ya en la base,
+            # y el payload no debe reflejarse literal (si sale tal cual, no se evaluo)
+            if expected in r.text and expected not in base_body and payload not in r.text:
                 log_vuln("CRITICAL", f"SSTI: param={param} payload={payload[:40]} -> {expected}")
                 findings.append({"param": param, "payload": payload, "expected": expected,
                                "severity": "CRITICAL"})
@@ -3036,30 +3060,46 @@ def mod_cmdi(ctx):
 
     log_info(f"Probando {len(params)} parametros (time-based)...")
 
+    rl = ctx["rate_limiter"]
+    rua = ctx["mode_config"]["rotate_ua"]
+
+    def timed(full_url):
+        start = time.time()
+        resp = safe_request(session, "GET", full_url, rl, rua, timeout=20)
+        return resp, time.time() - start
+
+    # Indicadores de salida fuertes (poco propensos a falso positivo)
+    cmdi_indicators = ["uid=", "gid=", "groups=", "volume serial number", "directory of"]
+
     for param in params:
+        # Linea base: valor benigno, para el tiempo y para descartar indicadores previos
+        base_resp, base_time = timed(f"{base}?{param}=127.0.0.1")
+        base_body = base_resp.text.lower() if base_resp else ""
+
         for payload, expected_delay in CMDI_PAYLOADS:
-            start = time.time()
-            r = safe_request(session, "GET", f"{base}?{param}=127.0.0.1{quote(payload)}",
-                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"], timeout=15)
-            elapsed = time.time() - start
+            r, elapsed = timed(f"{base}?{param}=127.0.0.1{quote(payload)}")
 
-            if elapsed >= expected_delay * 0.8:
-                log_vuln("CRITICAL", f"Command Injection (time-based): param={param} delay={elapsed:.1f}s")
-                findings.append({"param": param, "payload": payload, "delay": elapsed,
-                               "severity": "CRITICAL"})
-                break
+            # time-based: supera el delay esperado Y la baseline+4s, con doble confirmacion
+            if elapsed >= max(expected_delay * 0.8, base_time + 4.0):
+                _, tc = timed(f"{base}?{param}=127.0.0.1")                          # control rapido
+                r2, elapsed2 = timed(f"{base}?{param}=127.0.0.1{quote(payload)}")   # confirmar lento
+                if tc < 4.0 and elapsed2 >= expected_delay * 0.8:
+                    log_vuln("CRITICAL", f"Command Injection (time-based): param={param} "
+                                         f"delays={elapsed:.1f}s/{elapsed2:.1f}s baseline={base_time:.1f}s")
+                    findings.append({"param": param, "payload": payload,
+                                   "delay": round(elapsed, 2), "delay_confirm": round(elapsed2, 2),
+                                   "severity": "CRITICAL"})
+                    break
 
-            # Check for output-based
+            # output-based: indicador fuerte que NO estuviera ya en la respuesta base
             if r:
-                body = r.text
-                cmdi_indicators = ["uid=","gid=","groups=","root:","bin/","total ","drw",
-                                  "volume serial number","directory of","windows"]
-                for ind in cmdi_indicators:
-                    if ind in body.lower():
-                        log_vuln("CRITICAL", f"Command Injection (output): param={param} -> {ind}")
-                        findings.append({"param": param, "payload": payload,
-                                       "indicator": ind, "severity": "CRITICAL"})
-                        break
+                body_l = r.text.lower()
+                hit = next((i for i in cmdi_indicators if i in body_l and i not in base_body), None)
+                if hit:
+                    log_vuln("CRITICAL", f"Command Injection (output): param={param} -> {hit}")
+                    findings.append({"param": param, "payload": payload,
+                                   "indicator": hit, "severity": "CRITICAL"})
+                    break
 
     ctx["results"]["cmdi"] = findings
 
