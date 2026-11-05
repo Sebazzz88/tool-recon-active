@@ -1668,7 +1668,6 @@ def mod_subdomain_brute(ctx):
                 log_ok(f"{r[0]} -> {r[1]}")
             if checked_subs % 10 == 0 or checked_subs == total_subs:
                 print_progress(checked_subs, total_subs, f"encontrados: {len(found)}")
-                log_ok(f"{r[0]} -> {r[1]}")
 
     ctx["results"]["subdomains"] = found
     log_info(f"Encontrados: {len(found)} subdominios")
