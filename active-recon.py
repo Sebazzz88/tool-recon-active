@@ -147,8 +147,8 @@ SPEED_MODES = {
     "high": {
         "name": "HIGH (Aggressive)",
         "desc": "Velocidad maxima. Facilmente detectable por WAF/IDS.",
-        "rate_limit": 0, "delay_min": 0, "delay_max": 0.05,
-        "threads": 15, "rotate_ua": False, "jitter": False, "randomize": False,
+        "rate_limit": 0, "delay_min": 0, "delay_max": 0,
+        "threads": 30, "rotate_ua": False, "jitter": False, "randomize": False,
     },
 }
 
@@ -262,7 +262,7 @@ def safe_request(session, method, url, rate_limiter=None, rotate_ua=False, **kwa
     if rotate_ua:
         session.headers["User-Agent"] = random.choice(USER_AGENTS)
     try:
-        kwargs.setdefault("timeout", 10)
+        kwargs.setdefault("timeout", session.timeout if hasattr(session, 'timeout') else 10)
         kwargs.setdefault("verify", False)
         kwargs.setdefault("allow_redirects", False)
         return session.request(method, url, **kwargs)
@@ -294,6 +294,20 @@ def section_header(title):
         print(f"\n{sep}\n  {title}\n{sep}")
     else:
         print(f"\n{C.CY}{sep}{C.X}\n  {C.BOLD}{C.CY}{title}{C.X}\n{C.CY}{sep}{C.X}")
+
+_progress_lock = threading.Lock()
+
+def print_progress(current, total, extra=""):
+    with _progress_lock:
+        pct = int(current / total * 100) if total else 0
+        bar_len = 25
+        filled = int(bar_len * current / total) if total else 0
+        bar = "█" * filled + "░" * (bar_len - filled)
+        msg = f"\r  [{bar}] {current}/{total} ({pct}%) {extra}"
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+        if current >= total:
+            sys.stdout.write("\n")
 
 
 # =====================================================================
@@ -696,7 +710,7 @@ def mod_port_scan(ctx):
     def scan_port(port):
         ctx["rate_limiter"].wait()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(ctx["timeout"])
+        sock.settimeout(min(ctx["timeout"], 3) if not ctx["mode_config"]["jitter"] else ctx["timeout"])
         try:
             r = sock.connect_ex((host, port))
             return ("open", port) if r == 0 else ("closed", port)
@@ -711,17 +725,23 @@ def mod_port_scan(ctx):
     if ctx["mode_config"]["randomize"]:
         random.shuffle(scan_list)
 
+    total = len(scan_list)
+    scanned = 0
     with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
         futures = {executor.submit(scan_port, p): p for p in scan_list}
         for f in as_completed(futures):
+            scanned += 1
             st, port = f.result()
             if st == "open":
                 open_ports.append(port)
+                sys.stdout.write("\r" + " " * 80 + "\r")
                 log_ok(f"Puerto {port}/tcp ABIERTO")
             elif st == "filtered":
                 filtered += 1
             else:
                 closed += 1
+            if scanned % 5 == 0 or scanned == total:
+                print_progress(scanned, total, f"abiertos: {len(open_ports)}")
 
     open_ports.sort()
     ctx["results"]["open_ports"] = open_ports
@@ -852,19 +872,25 @@ def mod_dirbust(ctx):
     base = ctx["base_url"]
     session = ctx["session"]
     wordlist = ctx.get("custom_wordlist") or DIR_WORDLIST
-    extensions = ctx.get("extensions", "php,html,txt,bak,old,asp,aspx,jsp,json,xml,yml,yaml,conf,cfg,ini,log,sql,zip,tar.gz,rar").split(",")
+    ext_str = ctx.get("extensions", "php,html,txt,bak,old,asp,aspx,jsp,json,xml")
+    extensions = ext_str.split(",")
     found = []
 
-    paths = list(wordlist)
-    for word in list(wordlist):
-        for ext in extensions:
-            paths.append(f"{word}.{ext}")
+    # Solo agregar extensiones a palabras que no tienen extension propia
+    paths = []
+    for word in wordlist:
+        paths.append(word)
+        if "." not in word.split("/")[-1]:
+            for ext in extensions:
+                paths.append(f"{word}.{ext}")
     paths = list(set(paths))
     if ctx["mode_config"]["randomize"]:
         random.shuffle(paths)
 
-    log_info(f"Probando {len(paths)} rutas...")
+    total = len(paths)
+    log_info(f"Probando {total} rutas...")
     checked = 0
+    found_count = 0
 
     def check_path(path):
         url = f"{base}/{path}"
@@ -877,10 +903,14 @@ def mod_dirbust(ctx):
         futures = {executor.submit(check_path, p): p for p in paths}
         for f in as_completed(futures):
             checked += 1
+            if checked % 10 == 0 or checked == total:
+                print_progress(checked, total, f"encontrados: {found_count}")
             result = f.result()
             if result:
                 path, code, size = result
                 found.append({"path": path, "status": code, "size": size})
+                found_count += 1
+                sys.stdout.write("\r" + " " * 80 + "\r")
                 if code == 200:
                     log_ok(f"/{path} [{code}] ({size} bytes)")
                 elif code in (301, 302, 303, 307, 308):
@@ -921,12 +951,19 @@ def mod_subdomain_brute(ctx):
         except socket.gaierror:
             return None
 
+    total_subs = len(subs)
+    checked_subs = 0
     with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
         futures = {executor.submit(check_sub, s): s for s in subs}
         for f in as_completed(futures):
+            checked_subs += 1
             r = f.result()
             if r:
                 found.append({"subdomain": r[0], "ip": r[1]})
+                sys.stdout.write("\r" + " " * 80 + "\r")
+                log_ok(f"{r[0]} -> {r[1]}")
+            if checked_subs % 10 == 0 or checked_subs == total_subs:
+                print_progress(checked_subs, total_subs, f"encontrados: {len(found)}")
                 log_ok(f"{r[0]} -> {r[1]}")
 
     ctx["results"]["subdomains"] = found
@@ -1059,12 +1096,16 @@ def mod_param_discovery(ctx):
     if ctx["mode_config"]["randomize"]:
         random.shuffle(params)
 
-    for param in params:
+    total_p = len(params)
+    for i, param in enumerate(params, 1):
         url = f"{base}?{param}=test123"
         r = safe_request(session, "GET", url, ctx["rate_limiter"], ctx["mode_config"]["rotate_ua"])
         if r and abs(len(r.content) - baseline_size) > 50:
             found.append(param)
+            sys.stdout.write("\r" + " " * 80 + "\r")
             log_ok(f"Parametro activo: {param}")
+        if i % 5 == 0 or i == total_p:
+            print_progress(i, total_p, f"encontrados: {len(found)}")
 
     ctx["results"]["params_discovered"] = found
     log_info(f"Parametros activos: {len(found)}")
@@ -1092,13 +1133,19 @@ def mod_api_discovery(ctx):
                 return {"path": path, "status": r.status_code, "content_type": ct, "size": len(r.content)}
         return None
 
+    total_api = len(endpoints)
+    checked_api = 0
     with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
         futures = {executor.submit(check_api, p): p for p in endpoints}
         for f in as_completed(futures):
+            checked_api += 1
             r = f.result()
             if r:
                 found.append(r)
+                sys.stdout.write("\r" + " " * 80 + "\r")
                 log_ok(f"API: /{r['path']} [{r['status']}] {r['content_type']}")
+            if checked_api % 5 == 0 or checked_api == total_api:
+                print_progress(checked_api, total_api, f"encontrados: {len(found)}")
 
     ctx["results"]["api_endpoints"] = found
 
@@ -1128,14 +1175,20 @@ def mod_sensitive_files(ctx):
                 return {"path": path, "size": len(r.content), "snippet": r.text[:200]}
         return None
 
+    total_sf = len(files)
+    checked_sf = 0
     with ThreadPoolExecutor(max_workers=ctx["threads"]) as executor:
         futures = {executor.submit(check_file, p): p for p in files}
         for f in as_completed(futures):
+            checked_sf += 1
             r = f.result()
             if r:
                 found.append(r)
                 sev = "HIGH" if any(k in r["path"] for k in [".env",".git","config","password","credential","secret","id_rsa","shadow"]) else "MEDIUM"
+                sys.stdout.write("\r" + " " * 80 + "\r")
                 log_vuln(sev, f"Archivo sensible: /{r['path']} ({r['size']} bytes)")
+            if checked_sf % 5 == 0 or checked_sf == total_sf:
+                print_progress(checked_sf, total_sf, f"encontrados: {len(found)}")
 
     ctx["results"]["sensitive_files"] = found
 
@@ -3063,7 +3116,7 @@ Modulos especificos:
     parser.add_argument("--ports", default="top100", help="top100 | rango (1-1000) | lista (80,443)")
     parser.add_argument("--wordlist", help="Wordlist custom para directorios")
     parser.add_argument("--sublist", help="Wordlist custom para subdominios")
-    parser.add_argument("--extensions", default="php,html,txt,bak,old,asp,aspx,jsp,json,xml,yml,yaml,conf,cfg,ini,log,sql,zip,tar.gz,rar")
+    parser.add_argument("--extensions", default="php,html,txt,bak,json,xml,asp,jsp")
     parser.add_argument("--crawl-depth", type=int, default=3)
     parser.add_argument("--crawl-pages", type=int, default=100)
     parser.add_argument("--user-agent", help="User-Agent custom")
@@ -3120,13 +3173,16 @@ Modulos especificos:
     # Rate limiter
     rate_limiter = RateLimiter(mode_config)
 
-    # Session
+    # Session - timeout mas corto en high mode si no se especifica
+    timeout = args.timeout
+    if mode == "high" and args.timeout == 10:
+        timeout = 5
     session = create_session(
         user_agent=args.user_agent,
         proxy=args.proxy,
         cookies=args.cookies,
         headers=args.headers,
-        timeout=args.timeout,
+        timeout=timeout,
         rotate_ua=mode_config["rotate_ua"],
     )
 
