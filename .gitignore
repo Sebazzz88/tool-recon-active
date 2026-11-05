@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.json
+*.txt
+!active-recon.py
+!README.md
+!.gitignore
